@@ -3521,13 +3521,26 @@ class GPUModelRunner(
         Returns:
             Model output tensor
         """
-        return self.model(
+        out = self.model(
             input_ids=input_ids,
             positions=positions,
             intermediate_tensors=intermediate_tensors,
             inputs_embeds=inputs_embeds,
             **model_kwargs,
         )
+        # Opt-in NaN/Inf check for hybrid Mamba+Attn fp16 forwards.
+        import os as _os
+        if _os.environ.get("VLLM_DELTANET_BF16_OVERFLOW_GUARD") == "1":
+            _probe = out[0] if isinstance(out, tuple) else out
+            if isinstance(_probe, torch.Tensor):
+                if bool((~torch.isfinite(_probe)).any().item()):
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "[overflow-guard] non-finite values in output "
+                        "(shape=%s dtype=%s)",
+                        tuple(_probe.shape), _probe.dtype,
+                    )
+        return out
 
     @staticmethod
     def _is_uniform_decode(
