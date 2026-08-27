@@ -1,0 +1,32 @@
+{
+  "tag": "post-reboot",
+  "gpu_index": "1",
+  "when": "2026-08-27T22:17:33.490529+00:00",
+  "smoke": false,
+  "repeats": 5,
+  "gpu": "Quadro RTX 6000, 610.57.04, 1455 MHz | Quadro RTX 6000, 610.57.04, 1455 MHz",
+  "arch": "sm_75",
+  "s4_mma_available": false,
+  "s4_probe_note": "ptxas fatal   : Ptx assembly aborted due to errors",
+  "measurements": {
+    "f16_f32acc_m16n8k8": "name=f16f32 mma=m16n8k8 flops_per_mma=2048 mmas=3686400000 ms=74.086 tflops=101.90",
+    "f16_f16acc_m16n8k8": "name=f16f16 mma=m16n8k8 flops_per_mma=2048 mmas=3686400000 ms=74.023 tflops=101.99",
+    "int8_s8_m8n8k16": "name=s8 mma=m8n8k16 ops_per_mma=2048 mmas=3686400000 ms=37.063 tops=203.70",
+    "contention_hfma2_x0": "kind=hfma2 alu_per_iter=0 mmas=552960000 ms=11.298 hmma_tflops=100.23",
+    "contention_hfma2_x2": "kind=hfma2 alu_per_iter=2 mmas=552960000 ms=13.582 hmma_tflops=83.38",
+    "contention_hfma2_x4": "kind=hfma2 alu_per_iter=4 mmas=552960000 ms=15.756 hmma_tflops=71.88",
+    "contention_hfma2_x8": "kind=hfma2 alu_per_iter=8 mmas=552960000 ms=19.696 hmma_tflops=57.50",
+    "contention_hfma2_x16": "kind=hfma2 alu_per_iter=16 mmas=552960000 ms=26.715 hmma_tflops=42.39",
+    "contention_ffma_x0": "kind=ffma alu_per_iter=0 mmas=552960000 ms=11.309 hmma_tflops=100.14",
+    "contention_ffma_x2": "kind=ffma alu_per_iter=2 mmas=552960000 ms=13.204 hmma_tflops=85.77",
+    "contention_ffma_x4": "kind=ffma alu_per_iter=4 mmas=552960000 ms=15.480 hmma_tflops=73.16",
+    "contention_ffma_x8": "kind=ffma alu_per_iter=8 mmas=552960000 ms=25.270 hmma_tflops=44.82",
+    "contention_ffma_x16": "kind=ffma alu_per_iter=16 mmas=552960000 ms=46.706 hmma_tflops=24.25",
+    "contention_lop3_x0": "kind=lop3 alu_per_iter=0 mmas=552960000 ms=11.311 hmma_tflops=100.12",
+    "contention_lop3_x2": "kind=lop3 alu_per_iter=2 mmas=552960000 ms=13.174 hmma_tflops=85.96",
+    "contention_lop3_x4": "kind=lop3 alu_per_iter=4 mmas=552960000 ms=15.351 hmma_tflops=73.77",
+    "contention_lop3_x8": "kind=lop3 alu_per_iter=8 mmas=552960000 ms=25.151 hmma_tflops=45.03",
+    "contention_lop3_x16": "kind=lop3 alu_per_iter=16 mmas=552960000 ms=46.634 hmma_tflops=24.28",
+    "ldg_read_1024mib": "mib=1024 iters=100 ms=200.479 gb_per_s=535.6"
+  }
+}
