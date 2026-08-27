@@ -94,6 +94,11 @@ def main():
                 m[f"contention_{kind}_x{k}"] = meas(f"{BUILD}/bench_contention", kind, k,
                                                     cont_iters[0])
         m["ldg_read_1024mib"] = meas(f"{BUILD}/bench_memory", *mem_args)
+        m["sts_conflict_free"] = meas(f"{BUILD}/bench_shared", "sts", "10000")
+        m["sts_conflicted"] = meas(f"{BUILD}/bench_shared", "sts_conflict", "10000")
+        m["ldsm_x4"] = meas(f"{BUILD}/bench_shared", "ldsm", "10000")
+        m["staging_chain"] = meas(f"{BUILD}/bench_shared", "staging", "10000")
+        m["warp_scaling"] = meas(f"{BUILD}/bench_shared", "warp_scale", "40000")
 
         results = {
             "tag": args.tag, "gpu_index": gpu,
