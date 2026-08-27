@@ -1,0 +1,27 @@
+{
+  "tag": "smoke",
+  "when": "2026-08-27T22:08:32.076028+00:00",
+  "smoke": true,
+  "gpu": "Quadro RTX 6000, 610.57.04, 1455 MHz | Quadro RTX 6000, 610.57.04, 1455 MHz",
+  "arch": "sm_75",
+  "s4_mma_available": false,
+  "s4_probe_note": "ptxas fatal   : Ptx assembly aborted due to errors",
+  "measurements": {
+    "f16_f32acc_m16n8k16": "name=f16f32 mma=m16n8k8 flops_per_mma=2048 mmas=73728000 ms=2.226 tflops=67.82",
+    "f16_f16acc_m16n8k8": "name=f16f16 mma=m16n8k8 flops_per_mma=2048 mmas=73728000 ms=5.701 tflops=26.49",
+    "int8_s8_m8n8k16": "name=s8 mma=m8n8k16 ops_per_mma=2048 mmas=73728000 ms=0.969 tops=155.81",
+    "contention_hfma2_x0": "kind=hfma2 alu_per_iter=0 mmas=55296000 ms=1.403 hmma_tflops=80.73",
+    "contention_hfma2_x4": "kind=hfma2 alu_per_iter=4 mmas=55296000 ms=8.759 hmma_tflops=12.93",
+    "contention_hfma2_x8": "kind=hfma2 alu_per_iter=8 mmas=55296000 ms=2.240 hmma_tflops=50.56",
+    "contention_hfma2_x16": "kind=hfma2 alu_per_iter=16 mmas=55296000 ms=2.938 hmma_tflops=38.54",
+    "contention_ffma_x0": "kind=ffma alu_per_iter=0 mmas=55296000 ms=8.826 hmma_tflops=12.83",
+    "contention_ffma_x4": "kind=ffma alu_per_iter=4 mmas=55296000 ms=1.843 hmma_tflops=61.44",
+    "contention_ffma_x8": "kind=ffma alu_per_iter=8 mmas=55296000 ms=6.656 hmma_tflops=17.01",
+    "contention_ffma_x16": "kind=ffma alu_per_iter=16 mmas=55296000 ms=4.848 hmma_tflops=23.36",
+    "contention_lop3_x0": "kind=lop3 alu_per_iter=0 mmas=55296000 ms=1.403 hmma_tflops=80.72",
+    "contention_lop3_x4": "kind=lop3 alu_per_iter=4 mmas=55296000 ms=8.866 hmma_tflops=12.77",
+    "contention_lop3_x8": "kind=lop3 alu_per_iter=8 mmas=55296000 ms=2.859 hmma_tflops=39.61",
+    "contention_lop3_x16": "kind=lop3 alu_per_iter=16 mmas=55296000 ms=4.971 hmma_tflops=22.78",
+    "ldg_read_256mib": "mib=256 iters=20 ms=9.923 gb_per_s=541.0"
+  }
+}
