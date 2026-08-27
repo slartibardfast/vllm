@@ -1,0 +1,4 @@
+# Data artifacts: measured JSON and generated tables are data, not prose;
+# their decimal fields are quantities, not naming tells.
+turing_lab/results/
+turing_lab/search/config-table-*.json
