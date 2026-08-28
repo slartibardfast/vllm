@@ -37,3 +37,16 @@ kmap_power2_probe.cu). The open item is therefore NOT the fragment layout:
 it is the staging-to-fragment composition inside the committed
 double-buffered k_opt2, to be bisected with a correctly-sized standalone
 repro.
+
+## RESOLUTION (per-lane-distinct-b probe, same day)
+
+The per-lane-distinct-b probe (b.x = lane+1, b.y = 100+lane) with
+A = e at a0.x confirms: the mma sums the four row-group lanes' b.x values
+into D[0][0] (= 1+2+3+4 = 10), exactly as the documented fragment model
+predicts (each of the 4 lanes holds 2 of the 8 k values for the column).
+The fragment model is CORRECT. The earlier 822+48c reading was an
+artifact of the undersized host D buffer (now fixed).
+
+The register-dequant kernel's remaining issue is NOT the fragment layout:
+it is the correctness of the even/odd nibble-plane staging under the full
+M/N/K sweep, which the opt_oracle validates case by case.
