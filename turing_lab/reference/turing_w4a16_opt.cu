@@ -105,7 +105,7 @@ __global__ void k_opt(const __half* __restrict__ A,
         uint32_t wO = sQO[col][kk / 8];
         // interleave the lane's k, k+1 nibble pair into half lanes, bias 1024
         uint32_t spread = __byte_perm(wE, wO, 0x0400 + (cc << 8) + cc);
-        uint32_t hbits = lop3_or_and(spread, 0x000F000Fu, 0x64006400u);
+        uint32_t hbits = (spread & 0x000f000fu) | 0x64006400u;
         __half2 h2 = *reinterpret_cast<__half2*>(&hbits);
         __half2 w2 = __hsub2(h2, bias1032);
         __half2 a0 = *reinterpret_cast<const __half2*>(&sA[r0 + gg][kk + cc * 2]);
@@ -235,7 +235,7 @@ __global__ void k_opt2(const __half* __restrict__ A,
         uint32_t wE = sQE[buf][col][kk / 8];
         uint32_t wO = sQO[buf][col][kk / 8];
         uint32_t spread = __byte_perm(wE, wO, 0x0400 + (cc << 8) + cc);
-        uint32_t hbits = lop3_or_and(spread, 0x000F000Fu, 0x64006400u);
+        uint32_t hbits = (spread & 0x000f000fu) | 0x64006400u;
         __half2 h2 = *reinterpret_cast<__half2*>(&hbits);
         __half2 w2 = __hsub2(h2, bias1032);
         __half2 a0 = *reinterpret_cast<const __half2*>(&sA[buf][r0 + gg][kk + cc * 2]);
