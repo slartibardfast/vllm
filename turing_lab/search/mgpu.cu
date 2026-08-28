@@ -17,13 +17,18 @@ std::vector<bool> can_access_peer() {
 }
 
 // Idempotent: enabling twice returns cudaErrorPeerAccessAlreadyEnabled,
-// which is success for our purposes.
+// which is success for our purposes. Restores the caller's current device:
+// cudaSetDevice here is process-global state, and leaving it at 1 silently
+// reroutes every later device="cuda" allocation to GPU1.
 bool enable_peer_access() {
   if (g_enabled) return true;
+  int prev = 0;
+  cudaGetDevice(&prev);
   cudaSetDevice(0);
   cudaError_t e0 = cudaDeviceEnablePeerAccess(1, 0);
   cudaSetDevice(1);
   cudaError_t e1 = cudaDeviceEnablePeerAccess(0, 0);
+  cudaSetDevice(prev);
   g_enabled = (e0 == cudaSuccess || e0 == cudaErrorPeerAccessAlreadyEnabled)
            && (e1 == cudaSuccess || e1 == cudaErrorPeerAccessAlreadyEnabled);
   return g_enabled;

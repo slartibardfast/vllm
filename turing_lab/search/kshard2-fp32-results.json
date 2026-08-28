@@ -1,0 +1,29 @@
+[
+  {
+    "M": 1,
+    "single_ms": 0.3573,
+    "kshard2fp32_ms": 0.394,
+    "speedup": 0.907,
+    "single_err": 0.00461,
+    "kshard2_err": 0.00461,
+    "ok": true
+  },
+  {
+    "M": 64,
+    "single_ms": 0.4212,
+    "kshard2fp32_ms": 0.2504,
+    "speedup": 1.682,
+    "single_err": 0.00542,
+    "kshard2_err": 0.00542,
+    "ok": true
+  },
+  {
+    "M": 512,
+    "single_ms": 0.9408,
+    "kshard2fp32_ms": 0.6897,
+    "speedup": 1.364,
+    "single_err": 0.00581,
+    "kshard2_err": 0.00581,
+    "ok": true
+  }
+]

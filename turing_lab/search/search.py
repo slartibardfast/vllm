@@ -227,10 +227,14 @@ def modern_main(args):
             print(f"  winner: {res.winner_name} nz={res.nz} ({res.gate})")
         # winner gate against the first-generation seeded baseline: the
         # first-generation table's winners per M regime (bm64_bn64_w8 for
-        # M <= 128, bm64_bn128_w8 for M = 512; new indices 7 and 2)
-        first_gen = [(7, 1), (7, 1), (7, 1), (2, 1)]
+        # M <= 128, bm64_bn128_w8 for M = 512), resolved by name so
+        # propose.py's renumbering cannot silently retarget the gate
+        by_name = {ext.variant_name(i): i for i in range(ext.variant_count())}
+        first_gen_names = ["staged_64_64_64_w4x2", "staged_64_64_64_w4x2",
+                           "staged_64_64_64_w4x2", "staged_64_128_64_w4x2"]
+        first_gen = [(by_name[n], 1) for n in first_gen_names]
         for res, (bvi, bnz) in zip(results, first_gen):
-            res = sched.winner_gate(res, legal[bvi].name, bvi, bnz)
+            res = sched.winner_gate(res, ext.variant_name(bvi), bvi, bnz)
             print(f"  gated: {res.winner_name} nz={res.nz} ({res.gate})")
         bounds = sched.resolve_boundaries(results)
         sha = git_sha()

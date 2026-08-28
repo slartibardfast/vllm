@@ -44,6 +44,8 @@ def strategy_smem(strategy: str, bm: int, bn: int, bk: int) -> int:
         return (bm * (bk + 8) + bn * (bk + 8)) * half
     if strategy == "regdeq":
         return bm * (bk + 8) * half + 2 * bn * (bk // 8) * 4 + bn * half
+    if strategy == "regdeq2":
+        return bm * (bk + 8) * half + bn * (bk // 8) * 4 * 4 + bn * half
     if strategy == "pipe":
         return 2 * (bm * (bk + 8) + bn * (bk + 8)) * half
     raise ValueError(strategy)

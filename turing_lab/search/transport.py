@@ -90,24 +90,26 @@ def nshard2(ext, vi: int, A, Q, S, empty, G: int = 128, nz: int = 1):
 
 
 def kshard2(ext, vi: int, A, Q, S, empty, G: int = 128):
-    """K-sharded across two GPUs: fp16 partials summed on cuda:0."""
+    """K-sharded across two GPUs with fp32 partials: each GPU reduces its
+    own K half (both A and Q are sharded — the driver derives K from
+    A's width, so sharding only Q reads out of bounds) and the exact
+    fp32 partials are summed on cuda:0. Returns (Out on cuda:0, ms)."""
     M, K = A.shape
     N = Q.shape[0]
-    kw = K // 8
-    kw2 = kw // 2
-    K2 = K // 2
-    A1 = A.to("cuda:1")
+    kw2 = (K // 8) // 2
+    kh = K // 2
+    A0, A1 = A[:, :kh].contiguous(), A[:, kh:].to("cuda:1").contiguous()
     Q0, Q1 = Q[:, :kw2].contiguous(), Q[:, kw2:].to("cuda:1").contiguous()
     S0, S1 = S[: K // (2 * G), :].contiguous(), S[K // (2 * G):, :].to(
         "cuda:1").contiguous()
     s, e = torch.cuda.Event(True), torch.cuda.Event(True)
     s.record()
-    p0, _ = ext.launch(vi, A, Q0, S0, empty, G, 1)
-    p1, _ = ext.launch(vi, A1, Q1, S1, empty, G, 1)
+    p0 = ext.launch_partial(vi, A0, Q0, S0, empty, G)
+    p1 = ext.launch_partial(vi, A1, Q1, S1, empty, G)
     p1 = p1.to("cuda:0", non_blocking=True)
     e.record()
     torch.cuda.synchronize()
-    return p0 + p1, s.elapsed_time(e)
+    return (p0 + p1).half(), s.elapsed_time(e)
 
 
 def measure_strategies(ext, mgpu, shapes, msweeps, G: int = 128) -> dict:

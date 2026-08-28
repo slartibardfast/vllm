@@ -34,7 +34,7 @@ __device__ void staged_body(const __half* __restrict__ A,
                             const int32_t* __restrict__ ZP,
                             __half* __restrict__ Out, float* __restrict__ Part,
                             int M, int N, int K, int k_words, int G,
-                            int k_begin, int k_end, int nz) {
+                            int k_begin, int k_end, int nz, int fp32out) {
   __shared__ __half sA[BM][BK + 8];
   __shared__ __half sBT[BN][BK + 8];
 
@@ -99,7 +99,7 @@ __device__ void staged_body(const __half* __restrict__ A,
       int r = m_base + r0 + gg + half * 8;
       int c = n0 + n_base + nt * 8 + cc * 2;
       if (r < M) {
-        if (nz == 1) {
+        if (nz == 1 && !fp32out) {
           Out[(long)r * N + c] = __float2half(acc[nt][half * 2]);
           Out[(long)r * N + c + 1] = __float2half(acc[nt][half * 2 + 1]);
         } else {
@@ -119,7 +119,7 @@ __device__ void regdeq_body(const __half* __restrict__ A,
                             const __half* __restrict__ S,
                             __half* __restrict__ Out, float* __restrict__ Part,
                             int M, int N, int K, int k_words, int G,
-                            int k_begin, int k_end, int nz) {
+                            int k_begin, int k_end, int nz, int fp32out) {
   __shared__ __half sA[BM][BK + 8];
   // packed words split into even/odd nibble lanes, so a k,k+1 fragment pair
   // is one byte_perm away and both halves carry the same scale factor
@@ -215,7 +215,119 @@ __device__ void regdeq_body(const __half* __restrict__ A,
       int r = m_base + r0 + gg + half * 8;
       int c = n0 + n_base + nt * 8 + cc * 2;
       if (r < M) {
-        if (nz == 1) {
+        if (nz == 1 && !fp32out) {
+          Out[(long)r * N + c] = __float2half(acc[nt][half * 2]);
+          Out[(long)r * N + c + 1] = __float2half(acc[nt][half * 2 + 1]);
+        } else {
+          float* dst = Part + ((long)z * M + r) * N + c;
+          dst[0] = acc[nt][half * 2];
+          dst[1] = acc[nt][half * 2 + 1];
+        }
+      }
+    }
+  }
+}
+
+// ------------- strategy 3: regdequant, swizzled at staging -------------
+// The regdequant inner loop pays one byte_perm per fragment to pull the
+// lane's (k, k+1) nibble pair out of the even/odd split. Here the
+// permutation is hoisted into the staging loop: four lane-swizzled words
+// are precomputed per packed word, so the mma stream is lop3 + hsub2
+// only. Costs 2x the scale smem of regdequant (16 KiB at BN=128, BK=64).
+template <int BM, int BN, int BK, int WARPS_R, int WARPS_N>
+__device__ void regdeq2_body(const __half* __restrict__ A,
+                             const uint32_t* __restrict__ Q,
+                             const __half* __restrict__ S,
+                             __half* __restrict__ Out, float* __restrict__ Part,
+                             int M, int N, int K, int k_words, int G,
+                             int k_begin, int k_end, int nz, int fp32out) {
+  __shared__ __half sA[BM][BK + 8];
+  __shared__ uint32_t sQW[BN][BK / 8][4];
+  __shared__ __half sS[BN];
+
+  int n0 = blockIdx.x * BN;
+  int m_base = blockIdx.y * BM;
+  int tid = threadIdx.x;
+  int warp = tid >> 5, lane = tid & 31;
+  int warp_r = warp / WARPS_N, warp_n = warp % WARPS_N;
+  int r0 = warp_r * 16;
+  int n_base = warp_n * (BN / WARPS_N);
+  int gg = lane >> 2, cc = lane & 3;
+
+  float acc[BN / WARPS_N / 8][4] = {};
+  float part[BN / WARPS_N / 8][4];
+  constexpr int STAGE_THREADS = WARPS_R * WARPS_N * 32;
+  const __half2 bias1032 = __float2half2_rn(1032.0f);
+
+  for (int k0 = k_begin; k0 < k_end; k0 += BK) {
+    int kk_end = min(BK, k_end - k0);
+    for (int i = tid; i < BM * kk_end; i += STAGE_THREADS) {
+      int r = i / kk_end, c = i % kk_end;
+      int gm = m_base + r, gk = k0 + c;
+      __half v = __float2half(0.f);
+      if (gm < M && gk < K) v = A[(long)gm * K + gk];
+      sA[r][c] = v;
+    }
+    for (int i = tid; i < (kk_end * BN) / 8; i += STAGE_THREADS) {
+      int nn = i / (kk_end / 8);
+      int wcol = i % (kk_end / 8);
+      uint32_t w = Q[(long)(n0 + nn) * k_words + ((k0 + wcol * 8) >> 3)];
+      uint32_t wE = w & 0x0f0f0f0fu, wO = (w >> 4) & 0x0f0f0f0fu;
+#pragma unroll
+      for (int c = 0; c < 4; c++)
+        sQW[nn][wcol][c] = __byte_perm(wE, wO, 0x0400 + (c << 8) + c);
+    }
+    int g = k0 / G;
+    for (int i = tid; i < BN; i += STAGE_THREADS) {
+      sS[i] = S[g * N + n0 + i];
+    }
+    __syncthreads();
+#pragma unroll
+    for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+#pragma unroll
+      for (int e = 0; e < 4; e++) part[nt][e] = 0.f;
+    }
+    for (int kk = 0; kk < kk_end; kk += 8) {
+#pragma unroll
+      for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+        int col = n_base + nt * 8 + gg;
+        uint32_t w = sQW[col][kk / 8][cc];
+        uint32_t hbits = lop3_or_and(w, 0x000F000Fu, 0x64006400u);
+        __half2 h2 = *reinterpret_cast<__half2*>(&hbits);
+        __half2 w2 = __hsub2(h2, bias1032);
+        __half2 a0 = *(__half2*)&sA[r0 + gg][kk + cc * 2];
+        __half2 a1 = *(__half2*)&sA[r0 + gg + 8][kk + cc * 2];
+        float* dd = part[nt];
+        asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
+                     "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                     : "+f"(dd[0]), "+f"(dd[1]), "+f"(dd[2]), "+f"(dd[3])
+                     : "r"(*reinterpret_cast<uint32_t*>(&a0)),
+                       "r"(*reinterpret_cast<uint32_t*>(&a1)),
+                       "r"(*reinterpret_cast<uint32_t*>(&w2)));
+      }
+    }
+    __syncthreads();
+#pragma unroll
+    for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+      float s0 = __half2float(sS[n_base + nt * 8 + cc * 2]);
+      float s1 = __half2float(sS[n_base + nt * 8 + cc * 2 + 1]);
+      acc[nt][0] += part[nt][0] * s0;
+      acc[nt][1] += part[nt][1] * s1;
+      acc[nt][2] += part[nt][2] * s0;
+      acc[nt][3] += part[nt][3] * s1;
+    }
+    __syncthreads();
+  }
+
+  int z = blockIdx.z;
+#pragma unroll
+  for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+#pragma unroll
+    for (int half = 0; half < 2; half++) {
+      int r = m_base + r0 + gg + half * 8;
+      int c = n0 + n_base + nt * 8 + cc * 2;
+      if (r < M) {
+        if (nz == 1 && !fp32out) {
           Out[(long)r * N + c] = __float2half(acc[nt][half * 2]);
           Out[(long)r * N + c + 1] = __float2half(acc[nt][half * 2 + 1]);
         } else {
@@ -238,7 +350,7 @@ __device__ void pipe_body(const __half* __restrict__ A,
                           const __half* __restrict__ S,
                           __half* __restrict__ Out, float* __restrict__ Part,
                           int M, int N, int K, int k_words, int G,
-                          int k_begin, int k_end, int nz) {
+                          int k_begin, int k_end, int nz, int fp32out) {
   constexpr int BK = 32;
   __shared__ __half sA[2][BM][BK + 8];
   __shared__ __half sBT[2][BN][BK + 8];
@@ -342,6 +454,137 @@ __device__ void pipe_body(const __half* __restrict__ A,
       int r = m_base + r0 + gg + half * 8;
       int c = n0 + n_base + nt * 8 + cc * 2;
       if (r < M) {
+        if (nz == 1 && !fp32out) {
+          Out[(long)r * N + c] = __float2half(acc[nt][half * 2]);
+          Out[(long)r * N + c + 1] = __float2half(acc[nt][half * 2 + 1]);
+        } else {
+          float* dst = Part + ((long)z * M + r) * N + c;
+          dst[0] = acc[nt][half * 2];
+          dst[1] = acc[nt][half * 2 + 1];
+        }
+      }
+    }
+  }
+}
+
+// --------------- strategy 4: 3-stage double-buffered pipeline ---------------
+// pipe with three shared buffers and the loop-end barrier dropped: chunk
+// c+1's store overlaps chunk c's compute on a different buffer. Safety:
+// a warp cannot reach iteration c+3's store (which reuses chunk c's
+// buffer) until it passed the post-store barrier at c+2, and that
+// barrier is only reachable after every warp finished chunk c's compute.
+template <int BM, int BN, int WARPS_R, int WARPS_N>
+__device__ void pipe3_body(const __half* __restrict__ A,
+                           const uint32_t* __restrict__ Q,
+                           const __half* __restrict__ S,
+                           __half* __restrict__ Out, float* __restrict__ Part,
+                           int M, int N, int K, int k_words, int G,
+                           int k_begin, int k_end, int nz) {
+  constexpr int BK = 32;
+  __shared__ __half sA[3][BM][BK + 8];
+  __shared__ __half sBT[3][BN][BK + 8];
+
+  int n0 = blockIdx.x * BN;
+  int m_base = blockIdx.y * BM;
+  int tid = threadIdx.x;
+  int warp = tid >> 5, lane = tid & 31;
+  int r0 = (warp / WARPS_N) * 16;
+  int n_base = (warp % WARPS_N) * (BN / WARPS_N);
+  int gg = lane >> 2, cc = lane & 3;
+
+  float acc[BN / WARPS_N / 8][4] = {};
+
+  uint32_t rA[8], rW[2];
+  __half rS;
+
+  auto load_regs = [&](int k0) {
+    int r = tid / 2, seg = tid % 2;
+    if (r < BM) {
+      int gm = m_base + r, gk = k0 + seg * 16;
+      if (gm < M && gk + 15 < K) {
+        const uint32_t* src = reinterpret_cast<const uint32_t*>(&A[(long)gm * K + gk]);
+#pragma unroll
+        for (int i = 0; i < 8; i++) rA[i] = src[i];
+      } else {
+#pragma unroll
+        for (int i = 0; i < 8; i++) rA[i] = 0u;
+      }
+    }
+    int nn = tid / 2;
+    if (nn < BN) {
+      int gn = n0 + nn, wpair = tid % 2;
+      if (gn < N && k0 + wpair * 16 < K) {
+        rW[0] = Q[(long)gn * k_words + (k0 >> 3) + wpair * 2];
+        rW[1] = Q[(long)gn * k_words + (k0 >> 3) + wpair * 2 + 1];
+      } else {
+        rW[0] = rW[1] = 0u;
+      }
+      rS = S[(k0 / G) * N + gn];
+    }
+  };
+
+  auto store_shared = [&](int buf) {
+    int r = tid / 2, seg = tid % 2;
+    if (r < BM) {
+#pragma unroll
+      for (int i = 0; i < 8; i++)
+        *reinterpret_cast<uint32_t*>(&sA[buf][r][seg * 16 + i * 2]) = rA[i];
+    }
+    int nn = tid / 2;
+    if (nn < BN) {
+      float sc = __half2float(rS);
+      __half* dst = &sBT[buf][nn][(tid % 2) * 16];
+      uint32_t w0 = rW[0], w1 = rW[1];
+#pragma unroll
+      for (int j = 0; j < 8; j++) {
+        dst[j] = __float2half((float)((int)((w0 >> (4 * j)) & 0xFu) - 8) * sc);
+        dst[8 + j] = __float2half((float)((int)((w1 >> (4 * j)) & 0xFu) - 8) * sc);
+      }
+    }
+  };
+
+  auto compute = [&](int buf, int cols) {
+    for (int kk = 0; kk < cols; kk += 8) {
+#pragma unroll
+      for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+        __half2 a0 = *reinterpret_cast<const __half2*>(&sA[buf][r0 + gg][kk + cc * 2]);
+        __half2 a1 = *reinterpret_cast<const __half2*>(&sA[buf][r0 + gg + 8][kk + cc * 2]);
+        __half2 b = *reinterpret_cast<const __half2*>(&sBT[buf][n_base + nt * 8 + gg][kk + cc * 2]);
+        float* dd = acc[nt];
+        asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
+                     "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                     : "+f"(dd[0]), "+f"(dd[1]), "+f"(dd[2]), "+f"(dd[3])
+                     : "r"(*reinterpret_cast<uint32_t*>(&a0)),
+                       "r"(*reinterpret_cast<uint32_t*>(&a1)),
+                       "r"(*reinterpret_cast<uint32_t*>(&b)));
+      }
+    }
+  };
+
+  int slice = (k_end - k_begin + BK - 1) / BK;
+  int n_chunks = slice > 0 ? slice : 0;
+
+  if (n_chunks > 0) load_regs(k_begin);
+  for (int c = 0; c < n_chunks; c++) {
+    int k0 = k_begin + c * BK;
+    int cols = min(BK, k_end - k0);
+    store_shared(c % 3);
+    __syncthreads();
+    if (c + 1 < n_chunks) load_regs(k0 + BK);
+    compute(c % 3, cols);
+    // no loop-end barrier: chunk c+1's store lands on a different buffer,
+    // and chunk c's buffer is not reused until iteration c+3, two
+    // barriers after every warp finished this compute
+  }
+
+  int z = blockIdx.z;
+#pragma unroll
+  for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+#pragma unroll
+    for (int half = 0; half < 2; half++) {
+      int r = m_base + r0 + gg + half * 8;
+      int c = n0 + n_base + nt * 8 + cc * 2;
+      if (r < M) {
         if (nz == 1) {
           Out[(long)r * N + c] = __float2half(acc[nt][half * 2]);
           Out[(long)r * N + c + 1] = __float2half(acc[nt][half * 2 + 1]);
@@ -362,19 +605,24 @@ __global__ void k_search(const __half* __restrict__ A,
                          const __half* __restrict__ S_,
                          const int32_t* __restrict__ ZP,
                          __half* __restrict__ Out, float* __restrict__ Part,
-                         int M, int N, int K, int k_words, int G) {
+                         int M, int N, int K, int k_words, int G,
+                         int fp32out) {
   int slice = (K + gridDim.z - 1) / gridDim.z;
   int k_begin = blockIdx.z * slice;
   int k_end = min(K, k_begin + slice);
   if (S == 0)
     staged_body<BM, BN, BK, WR, WN>(A, Q, S_, ZP, Out, Part, M, N, K, k_words,
-                                    G, k_begin, k_end, gridDim.z);
+                                    G, k_begin, k_end, gridDim.z, fp32out);
   else if (S == 1)
     regdeq_body<BM, BN, BK, WR, WN>(A, Q, S_, Out, Part, M, N, K, k_words, G,
-                                    k_begin, k_end, gridDim.z);
+                                    k_begin, k_end, gridDim.z, fp32out);
+  else if (S == 3)
+    regdeq2_body<BM, BN, BK, WR, WN>(A, Q, S_, Out, Part, M, N, K,
+                                     k_words, G, k_begin, k_end,
+                                     gridDim.z, fp32out);
   else
     pipe_body<BM, BN, WR, WN>(A, Q, S_, Out, Part, M, N, K, k_words, G,
-                              k_begin, k_end, gridDim.z);
+                              k_begin, k_end, gridDim.z, fp32out);
 }
 
 __global__ void k_reduce(const float* __restrict__ P,
@@ -390,10 +638,11 @@ __global__ void k_reduce(const float* __restrict__ P,
 template <int S, int BM, int BN, int BK, int WR, int WN>
 void launch_k(const __half* A, const uint32_t* Q, const __half* Sc,
               const int32_t* ZP, __half* Out, float* Part, int M, int N,
-              int K, int k_words, int G, int nz) {
+              int K, int k_words, int G, int nz, int fp32out) {
   dim3 grid(N / BN, (M + BM - 1) / BM, nz);
   k_search<S, BM, BN, BK, WR, WN>
-      <<<grid, WR * WN * 32>>>(A, Q, Sc, ZP, Out, Part, M, N, K, k_words, G);
+      <<<grid, WR * WN * 32>>>(A, Q, Sc, ZP, Out, Part, M, N, K, k_words, G,
+                               fp32out);
 }
 
 // the variant table: one X-macro row per candidate; names carry the full
@@ -434,6 +683,8 @@ int variant_count() { return 0 FOR_EACH_VARIANT(COUNT_ROW); }
 // table's row order can never desynchronize the dispatch
 #define S_staged 0
 #define S_regdeq 1
+#define S_regdeq2 3
+#define S_pipe3 4
 #define S_pipe 2
 
 #define VARIANT_STR(s, bm, bn, bk, wr, wn) #s "_" #bm "_" #bn "_" #bk "_w" #wr "x" #wn
@@ -447,7 +698,7 @@ const char* variant_name(int i) {
 #define VARIANT_CASE(i, s, bm, bn, bk, wr, wn)                                    \
   case i:                                                                         \
     launch_k<S_##s, bm, bn, bk, wr, wn>(                                          \
-        A, Q, S, ZP, Out, Part, M, N, K, k_words, G, nz);                         \
+        A, Q, S, ZP, Out, Part, M, N, K, k_words, G, nz, fp32out);                \
     *bm_out = bm;                                                                 \
     *bn_out = bn;                                                                 \
     *bk_out = bk;                                                                 \
@@ -458,8 +709,8 @@ const char* variant_name(int i) {
 void variant_launch(int i, const __half* A, const uint32_t* Q,
                     const __half* S, const int32_t* ZP, __half* Out,
                     float* Part, int M, int N, int K, int k_words, int G,
-                    int nz, int* bm_out, int* bn_out, int* bk_out,
-                    int* thr_out, int* strat_out) {
+                    int nz, int fp32out, int* bm_out, int* bn_out,
+                    int* bk_out, int* thr_out, int* strat_out) {
   switch (i) { FOR_EACH_VARIANT(VARIANT_CASE) default: *bm_out = *bn_out = *bk_out = *thr_out = *strat_out = 0; }
 }
 

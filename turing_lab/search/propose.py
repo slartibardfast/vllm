@@ -17,6 +17,7 @@ usage: propose.py --generations 3 --per-generation 6 [--seed 0]
 
 import argparse
 import json
+import os
 import random
 import re
 import subprocess
@@ -67,6 +68,59 @@ def row_legal(row: tuple) -> tuple[bool, str]:
     if bn % 8 or bm % 16:
         return False, "tile not m16n8-compatible"
     return True, ""
+
+
+def llm_rows(base_rows: list[tuple], n_new: int, rng: random.Random) -> list[tuple]:
+    """Optional LLM proposer. Active when VLLM_TURING_PROPOSER_URL and
+    VLLM_TURING_PROPOSER_MODEL are set (OpenAI-compatible chat endpoint).
+    Asks for n_new legal (strategy, BM, BN, BK, WR, WN) rows near the
+    measured frontier; every returned row still passes row_legal and the
+    standard gates, so a hallucinated row costs one rejected candidate,
+    not a wrong answer. Falls back to stochastic mutation when the env
+    is unset or the call/parse fails."""
+    url = os.environ.get("VLLM_TURING_PROPOSER_URL")
+    model = os.environ.get("VLLM_TURING_PROPOSER_MODEL")
+    if not url or not model:
+        return [mutate(base_rows, rng) for _ in range(n_new)]
+    import json as _json
+    import urllib.request
+    prompt = (
+        "You propose GPU kernel tile configurations as JSON rows "
+        '[strategy, BM, BN, BK, WARPS_R, WARPS_N]. Legal: strategy in '
+        "{staged, regdeq, regdeq2, pipe, pipe3}; BM in {32,64,128}; BN in "
+        "{64,128,256}; BK 64 (pipe/pipe3: 32); pipe/pipe3 need "
+        "WARPS_R*WARPS_N*32 == max(BM,BN)*2. Shared memory per block must "
+        "stay under 32 KiB. Existing rows: "
+        f"{_json.dumps([list(r) for r in base_rows])}. "
+        f"Propose exactly {n_new} NEW rows as a bare JSON array."
+    )
+    try:
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps({"model": model,
+                              "messages": [{"role": "user",
+                                            "content": prompt}],
+                              "temperature": 0.8}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer "
+                     + os.environ.get("OPENAI_API_KEY", "")})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            text = _json.loads(r.read())["choices"][0]["message"]["content"]
+        arr = _json.loads(text[text.index("["): text.rindex("]") + 1])
+        out = []
+        for row in arr:
+            if len(row) != 6:
+                continue
+            row = (str(row[0]),) + tuple(int(x) for x in row[1:])
+            if row_legal(row)[0] and row not in base_rows:
+                out.append(row)
+            if len(out) >= n_new:
+                break
+        if out:
+            return out
+    except Exception as exc:
+        print(f"llm proposer failed ({exc}); falling back to mutation")
+    return [mutate(base_rows, rng) for _ in range(n_new)]
 
 
 def mutate(rows: list[tuple], rng: random.Random) -> tuple:
@@ -135,6 +189,7 @@ def main():
     ap.add_argument("--generations", type=int, default=2)
     ap.add_argument("--per-generation", type=int, default=6)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--proposer", choices=["mutate", "llm"], default="mutate")
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
@@ -144,7 +199,8 @@ def main():
     for gen in range(args.generations):
         proposals, seen = [], {r[1:] for r in base_rows}
         while len(proposals) < args.per_generation:
-            row = mutate(base_rows, rng)
+            row = (llm_rows(base_rows, 1, rng)[0]
+                   if args.proposer == "llm" else mutate(base_rows, rng))
             if row in seen or not row_legal(row)[0]:
                 continue
             seen.add(row)
