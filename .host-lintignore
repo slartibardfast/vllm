@@ -2,3 +2,4 @@
 # their decimal fields are quantities, not naming tells.
 turing_lab/results/
 turing_lab/search/config-table-*.json
+turing_lab/bench/marlin-bench-*.json
