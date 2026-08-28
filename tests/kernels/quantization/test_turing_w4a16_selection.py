@@ -59,7 +59,14 @@ def test_turing_backend_selected_by_default_on_this_device():
 
 
 def _capability_of(platform_capability):
-    """The backend's gate under a simulated device capability."""
+    """The backend's gate under a simulated device capability.
+
+    Fall-through is asserted at the gate, not through
+    choose_mp_linear_kernel(compute_capability=...): that argument only
+    feeds the min-capability filter, while every kernel's can_implement
+    queries the live platform, so a simulated capability cannot steer
+    selection on a single-GPU host.
+    """
     from vllm.model_executor.kernels.linear.mixed_precision.turing_marlin import (
         TuringMarlinLinearKernel,
     )
