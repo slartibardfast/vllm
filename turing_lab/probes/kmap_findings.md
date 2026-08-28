@@ -25,3 +25,15 @@ matrix must be consulted directly, and the staged-word layout of the
 register-dequant kernel rebuilt to match. Until then the fp16-staged
 kernels (opt1 23-25 TFLOP/s, pipe 13-14 TFLOP/s) remain the validated
 implementations.
+
+## CORRECTION (same day)
+
+The 822 + 48c pattern and the 16-lane-stride reading are INVALID: the probe's
+host D buffer was 16 floats while the kernel wrote 64 (out-of-bounds device
+writes into the allocation pool, copied back as garbage). With the buffer
+sized correctly the probe reproduces cleanly and matches the documented
+fragment layout (verified via the power-of-2 B-half decode in
+kmap_power2_probe.cu). The open item is therefore NOT the fragment layout:
+it is the staging-to-fragment composition inside the committed
+double-buffered k_opt2, to be bisected with a correctly-sized standalone
+repro.
