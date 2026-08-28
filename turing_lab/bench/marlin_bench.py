@@ -6,10 +6,10 @@ rig, so numbers differ only by hardware. Run under locked clocks.
 
 usage: marlin_bench.py [--reps 20] [--shapes 4096x4096,11008x4096,4096x11008]
                        [--ms 1,8,32,128,512] [--tag local]
+                       [--cpu-ref]
 """
 import argparse
 import json
-import re
 import subprocess
 from statistics import median
 
@@ -36,8 +36,9 @@ def pack_q(w, G):
     groups = K // G
     s_ng = (w.view(N, groups, G).abs().amax(dim=2) / 7.0).clamp(min=1e-8).half()
     s = s_ng.T.contiguous()  # (groups, N)
-    q = torch.clamp(torch.round(w.view(N, groups, G).double()
-                                / s_ng.double().unsqueeze(2)) + 8, 0, 15).to(torch.int32)
+    q = torch.clamp(
+        torch.round(w.view(N, groups, G).double()
+                    / s_ng.double().unsqueeze(2)) + 8, 0, 15).to(torch.int32)
     q = q.view(N, K)
     packed = torch.zeros(K // 8, N, dtype=torch.int32, device=w.device)
     for j in range(8):
@@ -51,6 +52,9 @@ def main():
     ap.add_argument("--shapes", default="4096x4096,11008x4096,4096x11008")
     ap.add_argument("--ms", default="1,8,32,128,512")
     ap.add_argument("--tag", default="run")
+    ap.add_argument("--cpu-ref", action="store_true",
+                    help="evaluate the fp64 reference on CPU (for"
+                         " memory-constrained GPUs); identical IEEE fp64")
     args = ap.parse_args()
     shapes = [tuple(int(x) for x in s.split("x")) for s in args.shapes.split(",")]
     ms = [int(x) for x in args.ms.split(",")]
@@ -72,14 +76,27 @@ def main():
         g_idx, zp = empty, empty
 
         # correctness once per shape against the float64 dequant reference
-        w_deq = (q.double() - 8.0) * s.repeat_interleave(G, 0).double().T
         A = torch.randn(64, K, dtype=torch.float16, device=dev)
-        ref = A.double() @ w_deq.T
-        out = ops.marlin_gemm(
-            A, None, qweight, None, w_s, None, None, zp, g_idx,
-            g_idx, workspace, wtype, size_m=64, size_n=N, size_k=K,
-            is_k_full=True, use_atomic_add=False, use_fp32_reduce=True)
-        err = (out.double() - ref).abs().max().item()
+        if args.cpu_ref:
+            # reference on CPU keeps the GPU pool small; fp64 is fp64
+            w_deq = (q.cpu().double() - 8.0) * \
+                s.repeat_interleave(G, 0).cpu().double().T
+            ref = A.cpu().double() @ w_deq.T
+            out = ops.marlin_gemm(
+                A, None, qweight, None, w_s, None, None, zp, g_idx,
+                g_idx, workspace, wtype, size_m=64, size_n=N, size_k=K,
+                is_k_full=True, use_atomic_add=False, use_fp32_reduce=True)
+            err = (out.cpu().double() - ref).abs().max().item()
+            del packed, q, w
+        else:
+            w_deq = (q.double() - 8.0) * s.repeat_interleave(G, 0).double().T
+            A = torch.randn(64, K, dtype=torch.float16, device=dev)
+            ref = A.double() @ w_deq.T
+            out = ops.marlin_gemm(
+                A, None, qweight, None, w_s, None, None, zp, g_idx,
+                g_idx, workspace, wtype, size_m=64, size_n=N, size_k=K,
+                is_k_full=True, use_atomic_add=False, use_fp32_reduce=True)
+            err = (out.double() - ref).abs().max().item()
         assert err < 0.05 * max(ref.abs().max().item(), 1e-6), f"correctness {err}"
 
         for M in ms:

@@ -1,0 +1,1 @@
+bench_rc=0 samples=23 max_util=12 tok_delta=0 pre_mhz=1665 post_mhz=1665 verdict=VALID
