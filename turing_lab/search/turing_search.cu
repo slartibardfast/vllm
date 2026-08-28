@@ -398,6 +398,9 @@ void launch_k(const __half* A, const uint32_t* Q, const __half* Sc,
 
 // the variant table: one X-macro row per candidate; names carry the full
 // config so the python side can parse legality from them alone
+#if __has_include("variants.def")
+#include "variants.def"
+#else
 #define FOR_EACH_VARIANT(V)                                                        \
   V(0, staged, 64, 64, 64, 4, 1)                                                   \
   V(1, staged, 64, 128, 64, 4, 1)                                                  \
@@ -419,28 +422,37 @@ void launch_k(const __half* A, const uint32_t* Q, const __half* Sc,
   V(17, pipe, 128, 64, 32, 8, 1)                                                   \
   V(18, pipe, 64, 128, 32, 4, 2)                                                   \
   V(19, pipe, 128, 128, 32, 8, 1)
+#endif
+
 
 extern "C" {
 
-int variant_count() { return 20; }
+#define COUNT_ROW(i, s, bm, bn, bk, wr, wn) + 1
+int variant_count() { return 0 FOR_EACH_VARIANT(COUNT_ROW); }
+
+// the strategy token maps to the template int by token-paste, so the
+// table's row order can never desynchronize the dispatch
+#define S_staged 0
+#define S_regdeq 1
+#define S_pipe 2
 
 #define VARIANT_STR(s, bm, bn, bk, wr, wn) #s "_" #bm "_" #bn "_" #bk "_w" #wr "x" #wn
 #define VARIANT_NAME(i, s, bm, bn, bk, wr, wn) VARIANT_STR(s, bm, bn, bk, wr, wn),
 
 const char* variant_name(int i) {
   static const char* names[] = {FOR_EACH_VARIANT(VARIANT_NAME)};
-  return (i >= 0 && i < 20) ? names[i] : "?";
+  return (i >= 0 && i < variant_count()) ? names[i] : "?";
 }
 
 #define VARIANT_CASE(i, s, bm, bn, bk, wr, wn)                                    \
   case i:                                                                         \
-    launch_k<i == 0 ? 0 : (i <= 7 ? 0 : (i <= 15 ? 1 : 2)), bm, bn, bk, wr, wn>(  \
+    launch_k<S_##s, bm, bn, bk, wr, wn>(                                          \
         A, Q, S, ZP, Out, Part, M, N, K, k_words, G, nz);                         \
     *bm_out = bm;                                                                 \
     *bn_out = bn;                                                                 \
     *bk_out = bk;                                                                 \
     *thr_out = wr * wn * 32;                                                      \
-    *strat_out = (i <= 7) ? 0 : (i <= 15 ? 1 : 2);                                \
+    *strat_out = S_##s;                                                           \
     break;
 
 void variant_launch(int i, const __half* A, const uint32_t* Q,

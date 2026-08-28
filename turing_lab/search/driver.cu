@@ -29,7 +29,12 @@ std::vector<torch::Tensor> launch(int64_t i, torch::Tensor A, torch::Tensor Q,
   int M = A.size(0), K = A.size(1), N = Q.size(0);
   auto Out = torch::empty({M, N}, A.options());
   int k_words = K / 8;
-  const int32_t* zp = ZP.has_value() ? ZP.value().data_ptr<int32_t>() : nullptr;
+  // a zero-element ZP tensor is treated as absent: data_ptr() of an empty
+  // tensor is not guaranteed null, and the kernel gates on pointer truth
+  const int32_t* zp =
+      (ZP.has_value() && ZP.value().numel() > 0)
+          ? ZP.value().data_ptr<int32_t>()
+          : nullptr;
   int bm, bn, bk, thr, strat;
   if (nz <= 1) {
     variant_launch((int)i,

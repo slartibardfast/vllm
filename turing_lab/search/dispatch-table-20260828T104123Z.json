@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "git": "5d533553a6",
+  "attestation": {
+    "pre_mhz": 1455,
+    "post_mhz": 0,
+    "ok": false
+  },
+  "regimes": [
+    {
+      "m_lo": 1,
+      "m_hi": 8,
+      "variant": "staged_64_64_64_w4x2",
+      "index": 16,
+      "nz": 1,
+      "gate": "baseline retained (TPE ladder best 0.09 TF/s lost the gate, sigma 0.0025)"
+    },
+    {
+      "m_lo": 9,
+      "m_hi": 64,
+      "variant": "staged_64_64_64_w4x2",
+      "index": 16,
+      "nz": 1,
+      "gate": "baseline retained (TPE ladder best 3.32 TF/s lost the gate, sigma 0.0047)"
+    },
+    {
+      "m_lo": 65,
+      "m_hi": 192,
+      "variant": "staged_64_64_64_w4x2",
+      "index": 16,
+      "nz": 1,
+      "gate": "baseline retained (TPE ladder best 6.76 TF/s lost the gate, sigma 0.0015)"
+    },
+    {
+      "m_lo": 193,
+      "m_hi": 4096,
+      "variant": "staged_64_128_64_w4x2",
+      "index": 18,
+      "nz": 1,
+      "gate": "baseline retained (TPE ladder best 17.94 TF/s lost the gate, sigma 0.0281)"
+    }
+  ],
+  "boundaries": [
+    {
+      "m": 9,
+      "hysteresis": 0
+    },
+    {
+      "m": 65,
+      "hysteresis": 0
+    },
+    {
+      "m": 184,
+      "hysteresis": 8
+    }
+  ]
+}
