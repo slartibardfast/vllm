@@ -95,7 +95,6 @@ def kshard2(ext, vi: int, A, Q, S, empty, G: int = 128):
     A's width, so sharding only Q reads out of bounds) and the exact
     fp32 partials are summed on cuda:0. Returns (Out on cuda:0, ms)."""
     M, K = A.shape
-    N = Q.shape[0]
     kw2 = (K // 8) // 2
     kh = K // 2
     A0, A1 = A[:, :kh].contiguous(), A[:, kh:].to("cuda:1").contiguous()
@@ -119,7 +118,7 @@ def measure_strategies(ext, mgpu, shapes, msweeps, G: int = 128) -> dict:
     rows = []
     for (N, K) in shapes:
         for M in msweeps:
-            A, Q, S, empty, ref_fn = make_problem(N, K, M, seed=3)
+            A, Q, S, empty, ref_fn = make_problem(N, K, M, seed=3)  # noqa: B023
             ref = ref_fn()
             tol = 0.05 * max(ref.abs().max().item(), 1e-6)
 
@@ -136,9 +135,12 @@ def measure_strategies(ext, mgpu, shapes, msweeps, G: int = 128) -> dict:
                     ts.append(st.elapsed_time(en))
                 return median(sorted(ts))
 
-            # single-GPU reference: best-of-first-gen config, nz=1 (index 7)
+            # single-GPU reference: best-of-first-gen config, nz=1; the
+            # loop-variable bindings are deliberate defaults (B023)
             out_single, _ = ext.launch(7, A, Q, S, empty, G, 1)
-            t_single = timed(lambda: ext.launch(7, A, Q, S, empty, G, 1))
+            t_single = timed(
+                lambda A=A, Q=Q, S=S, empty=empty: ext.launch(
+                    7, A, Q, S, empty, G, 1))
             out_ns, t_ns = nshard2(ext, 7, A, Q, S, empty, G)
             out_ks, t_ks = kshard2(ext, 7, A, Q, S, empty, G)
             e_ns = (out_ns.double() - ref).abs().max().item()

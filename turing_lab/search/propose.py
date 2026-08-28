@@ -21,18 +21,24 @@ import os
 import random
 import re
 import subprocess
+import sys
 
 import torch
-from harness import make_problem, oracle_ok
-from space import OCCUPANCY_BLOCKS, SMEM_PER_SM, strategy_smem
 from torch.utils.cpp_extension import load
 
-DEF_FILE = "variants.def"
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # noqa: E402  (harness/space live beside this file)
+from harness import make_problem, oracle_ok  # noqa: E402
+from space import OCCUPANCY_BLOCKS, SMEM_PER_SM, strategy_smem  # noqa: E402
+
+DEF_FILE = os.path.join(HERE, "variants.def")
 
 
 def read_rows() -> list[tuple]:
     rows = []
-    for line in open(DEF_FILE):
+    with open(DEF_FILE) as f:
+        lines = f.readlines()
+    for line in lines:
         m = re.match(
             r"\s*V\((\d+),\s*(\w+),\s*(\d+),\s*(\d+),\s*(\d+),"
             r"\s*(\d+),\s*(\d+)\)",
@@ -54,7 +60,8 @@ def write_rows(rows: list[tuple]) -> None:
     for i, (s, bm, bn, bk, wr, wn) in enumerate(rows):
         line = f"V({i}, {s}, {bm}, {bn}, {bk}, {wr}, {wn})"
         lines.append(line + (" \\" if i < len(rows) - 1 else ""))
-    open(DEF_FILE, "w").write("\n".join(lines) + "\n")
+    with open(DEF_FILE, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def row_legal(row: tuple) -> tuple[bool, str]:
@@ -62,9 +69,10 @@ def row_legal(row: tuple) -> tuple[bool, str]:
     smem = strategy_smem(strategy, bm, bn, bk)
     if smem * OCCUPANCY_BLOCKS > SMEM_PER_SM:
         return False, f"smem {smem}B x2 > 64KiB"
-    if strategy == "pipe":
-        if bk != 32 or wr * wn * 32 != max(bm, bn) * 2:
-            return False, "pipe requires BK=32 and THREADS=2*max(BM,BN)"
+    if strategy in ("pipe", "pipe3") and (
+        bk != 32 or wr * wn * 32 != max(bm, bn) * 2
+    ):
+        return False, "pipe3/pipe require BK=32 and THREADS=2*max(BM,BN)"
     if bn % 8 or bm % 16:
         return False, "tile not m16n8-compatible"
     return True, ""
@@ -158,7 +166,8 @@ def rebuild_ext():
     )
     return load(
         name="turing_search_drv",
-        sources=["driver.cu", "turing_search.cu"],
+        sources=[os.path.join(HERE, "driver.cu"),
+                 os.path.join(HERE, "turing_search.cu")],
         extra_cuda_cflags=["-arch=sm_75", "-O3"],
         verbose=False,
     )
@@ -242,7 +251,7 @@ def main():
         else:
             write_rows(base_rows)
     report["final_rows"] = [list(r) for r in read_rows()]
-    with open("proposals-report.json", "w") as f:
+    with open(os.path.join(HERE, "proposals-report.json"), "w") as f:
         json.dump(report, f, indent=2)
     print(
         f"final table: {len(report['final_rows'])} rows"

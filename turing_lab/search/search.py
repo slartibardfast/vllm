@@ -38,9 +38,9 @@ def build():
             "-I",
             HERE,
             "-c",
-            "turing_search.cu",
+            os.path.join(HERE, "turing_search.cu"),
             "-o",
-            "turing_search.o",
+            os.path.join(HERE, "turing_search.o"),
         ],
         capture_output=True,
         text=True,
@@ -173,10 +173,11 @@ def legacy_main(ext):
             cands.sort(reverse=True)
             result[M] = {"config": cands[0][1], "worst_relative": round(cands[0][0], 3)}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    with open(f"config-table-{stamp}.json", "w") as f:
+    path = os.path.join(HERE, f"config-table-{stamp}.json")
+    with open(path, "w") as f:
         json.dump({"candidates": table, "table": result}, f, indent=2)
     print(json.dumps(result, indent=2))
-    print(f"legacy table -> config-table-{stamp}.json")
+    print(f"legacy table -> {path}")
 
 
 def modern_main(args):
