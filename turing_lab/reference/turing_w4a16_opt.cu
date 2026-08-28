@@ -168,94 +168,86 @@ __global__ void k_opt2(const __half* __restrict__ A,
                        const __half* __restrict__ S,
                        __half* __restrict__ Out, int M, int N, int K,
                        int k_words, int G) {
-  __shared__ __half sA[2][BM2][BK2 + 8];
-  __shared__ uint32_t sQE[2][BN2][BK2 / 8];
-  __shared__ uint32_t sQO[2][BN2][BK2 / 8];
-  __shared__ __half sS[2][BN2];
+  __shared__ __half sA[BM][BK + 8];
+  __shared__ uint32_t sQE[BN][BK / 8];
+  __shared__ uint32_t sQO[BN][BK / 8];
+  __shared__ __half sS[BN];
 
-  int n0 = blockIdx.x * BN2;
-  int m_base = blockIdx.y * BM2;
+  int n0 = blockIdx.x * BN;
+  int m_base = blockIdx.y * BM;
   int tid = threadIdx.x;
   int warp = tid >> 5, lane = tid & 31;
-  int warp_r = warp / WN2, warp_n = warp % WN2;
+  int warp_r = warp / WARPS_N, warp_n = warp % WARPS_N;
   int r0 = warp_r * 16;
-  int n_base = warp_n * (BN2 / WN2);
+  int n_base = warp_n * (BN / WARPS_N);
   int gg = lane >> 2, cc = lane & 3;
 
-  float acc[BN2 / WN2 / 8][4] = {};
-  float part[BN2 / WN2 / 8][4] = {};
+  float acc[BN / WARPS_N / 8][4] = {};
+  float part[BN / WARPS_N / 8][4] = {};
   const __half2 bias1032 = __half2half2(__float2half(1032.0f));
 
-  // per-thread staging registers: one 8-half A group, two Q words, one scale
-  uint32_t rA[4], rQE, rQO;
-  __half rS;
-
-  auto load_regs = [&](int k0) {
-    int r = tid / 8, c8 = tid % 8;
-    int gm = m_base + r, gk = k0 + c8 * 8;
-    if (gm < M && gk + 7 < K) {
-      const uint32_t* src = reinterpret_cast<const uint32_t*>(&A[(long)gm * K + gk]);
-      rA[0] = src[0]; rA[1] = src[1]; rA[2] = src[2]; rA[3] = src[3];
-    } else {
-      rA[0] = rA[1] = rA[2] = rA[3] = 0u;
+  for (int k0 = 0; k0 < K; k0 += BK) {
+    for (int i = tid; i < BM * (BK / 8); i += THREADS) {
+      int r = i / (BK / 8), c8 = i % (BK / 8);
+      int gm = m_base + r, gk = k0 + c8 * 8;
+      const __half2 zero2 = __float2half2_rn(0.f);
+      __half2 h0 = zero2, h1 = zero2, h2 = zero2, h3 = zero2;
+      if (gm < M && gk < K) {
+        const __half2* src = reinterpret_cast<const __half2*>(&A[(long)gm * K + gk]);
+        h0 = src[0]; h1 = src[1]; h2 = src[2]; h3 = src[3];
+      }
+      *reinterpret_cast<__half2*>(&sA[r][c8 * 8]) = h0;
+      *reinterpret_cast<__half2*>(&sA[r][c8 * 8 + 2]) = h1;
+      *reinterpret_cast<__half2*>(&sA[r][c8 * 8 + 4]) = h2;
+      *reinterpret_cast<__half2*>(&sA[r][c8 * 8 + 6]) = h3;
     }
-    int nn = tid / 2, wcol = tid % 2;
-    int gn = n0 + nn;
-    if (gn < N && k0 + wcol * 8 < K) {
-      uint32_t w = Q[(long)gn * k_words + (k0 >> 3) + wcol];
-      rQE = w & 0x0f0f0f0fu;
-      rQO = (w >> 4) & 0x0f0f0f0fu;
-    } else {
-      rQE = rQO = 0u;
+    for (int i = tid; i < BN * (BK / 8); i += THREADS) {
+      int nn = i / (BK / 8), wcol = i % (BK / 8);
+      int gn = n0 + nn;
+      uint32_t w = (gn < N && k0 + wcol * 8 < K)
+                       ? Q[(long)gn * k_words + (k0 >> 3) + wcol]
+                       : 0u;
+      sQE[nn][wcol] = w & 0x0f0f0f0fu;
+      sQO[nn][wcol] = (w >> 4) & 0x0f0f0f0fu;
     }
-    rS = (tid < BN2) ? S[(k0 / G) * N + n0 + tid] : __float2half(0.f);
-  };
-  auto store_shared = [&](int buf, int k0) {
-    int r = tid / 8, c8 = tid % 8;
-    (void)k0;
-    *reinterpret_cast<uint32_t*>(&sA[buf][r][c8 * 8]) = rA[0];
-    *reinterpret_cast<uint32_t*>(&sA[buf][r][c8 * 8 + 4]) = rA[1];
-    *reinterpret_cast<uint32_t*>(&sA[buf][r][c8 * 8 + 8]) = rA[2];
-    *reinterpret_cast<uint32_t*>(&sA[buf][r][c8 * 8 + 12]) = rA[3];
-    int nn = tid / 2, wcol = tid % 2;
-    sQE[buf][nn][wcol] = rQE;
-    sQO[buf][nn][wcol] = rQO;
-    if (tid < BN2) sS[buf][tid] = rS;
-  };
-  auto compute = [&](int buf, int k0) {
+    int g = k0 / G;
+    for (int i = tid; i < BN; i += THREADS) {
+      sS[i] = S[g * N + n0 + i];
+    }
+    __syncthreads();
 #pragma unroll
-    for (int nt = 0; nt < BN2 / WN2 / 8; nt++) {
+    for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
 #pragma unroll
       for (int e = 0; e < 4; e++) part[nt][e] = 0.f;
     }
-    for (int kk = 0; kk < BK2; kk += 8) {
+
+    for (int kk = 0; kk < BK; kk += 8) {
 #pragma unroll
-      for (int nt = 0; nt < BN2 / WN2 / 8; nt++) {
+      for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
         int col = n_base + nt * 8 + gg;
-        uint32_t wE = sQE[buf][col][kk / 8];
-        uint32_t wO = sQO[buf][col][kk / 8];
+        uint32_t wE = sQE[col][kk / 8];
+        uint32_t wO = sQO[col][kk / 8];
         uint32_t spread = __byte_perm(wE, wO, 0x0400 + (cc << 8) + cc);
         uint32_t hbits = (spread & 0x000f000fu) | 0x64006400u;
         __half2 h2 = *reinterpret_cast<__half2*>(&hbits);
         __half2 w2 = __hsub2(h2, bias1032);
-        __half2 a0 = *reinterpret_cast<const __half2*>(&sA[buf][r0 + gg][kk + cc * 2]);
-        __half2 a1 = *reinterpret_cast<const __half2*>(&sA[buf][r0 + gg + 8][kk + cc * 2]);
+        __half2 a0 = *reinterpret_cast<const __half2*>(&sA[r0 + gg][kk + cc * 2]);
+        __half2 a1 = *reinterpret_cast<const __half2*>(&sA[r0 + gg + 8][kk + cc * 2]);
         float* dd = part[nt];
+        
         asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
                      "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
                      : "+f"(dd[0]), "+f"(dd[1]), "+f"(dd[2]), "+f"(dd[3])
                      : "r"(*reinterpret_cast<uint32_t*>(&a0)),
                        "r"(*reinterpret_cast<uint32_t*>(&a1)),
                        "r"(*reinterpret_cast<uint32_t*>(&w2)));
-      }
-    }
-    // scales in the accumulator domain for this chunk
-    int g = k0 / G;
+      }  // nt
+    }  // kk
     __syncthreads();
 #pragma unroll
-    for (int nt = 0; nt < BN2 / WN2 / 8; nt++) {
-      float s0 = __half2float(sS[buf][n_base + nt * 8 + cc * 2]);
-      float s1 = __half2float(sS[buf][n_base + nt * 8 + cc * 2 + 1]);
+    for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
+      float s0 = __half2float(sS[n_base + nt * 8 + cc * 2]);
+      float s1 = __half2float(sS[n_base + nt * 8 + cc * 2 + 1]);
       part[nt][0] *= s0;
       part[nt][1] *= s1;
       part[nt][2] *= s0;
@@ -266,21 +258,10 @@ __global__ void k_opt2(const __half* __restrict__ A,
       acc[nt][3] += part[nt][3];
     }
     __syncthreads();
-  };
-
-  int n_chunks = (K + BK2 - 1) / BK2;
-  load_regs(0);
-  store_shared(0, 0);
-  __syncthreads();
-  for (int c = 0; c < n_chunks; c++) {
-    if (c + 1 < n_chunks) load_regs((c + 1) * BK2);
-    compute(c, c * BK2);
-    if (c + 1 < n_chunks) store_shared((c + 1) % 2, (c + 1) * BK2);
-    __syncthreads();
   }
 
 #pragma unroll
-  for (int nt = 0; nt < BN2 / WN2 / 8; nt++) {
+  for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
 #pragma unroll
     for (int half = 0; half < 2; half++) {
       int r = m_base + r0 + gg + half * 8;
@@ -292,6 +273,7 @@ __global__ void k_opt2(const __half* __restrict__ A,
     }
   }
 }
+
 
 torch::Tensor w4a16_opt(torch::Tensor A, torch::Tensor Q, torch::Tensor S,
                         int64_t G) {
