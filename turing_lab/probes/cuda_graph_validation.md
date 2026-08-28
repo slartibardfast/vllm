@@ -23,3 +23,14 @@ the workspace to be zeroed between replays, but the graph's fill and
 accumulate nodes have a memory dependency that the current capture does
 not express. Fix: use a dedicated memset node between the fill and the
 accumulate, or restructure to use a separate output buffer per split.
+
+## Root cause
+
+The atomicAdd pattern in the split-K kernel is incompatible with CUDA
+graph capture for deterministic replay: the fill-then-accumulate sequence
+requires a memory barrier between the fill and the accumulate that the
+graph does not express. Fix options:
+(1) replace atomicAdd with a store (correct for num_splits=1),
+(2) use per-split output buffers with a final reduction kernel,
+(3) use cudaMemsetAsync inside the kernel prologue.
+Option (1) is the simplest and correct for the single-split case.
