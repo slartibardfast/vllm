@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cuda_fp16.h>
 #include "sm80_on_sm75.cuh"
+#include <device_launch_parameters.h>
 
 #define CHECK_CUDA(call)                                                     \
   do {                                                                       \
@@ -300,12 +301,99 @@ void test_redux() {
   cudaFree(d_in); cudaFree(d_sum); cudaFree(d_mx);
 }
 
+// ------------------------------------------------- fp8 e4m3 -> f16 -----
+// Exhaustive over all 256 E4M3 codes against the spec reference:
+// value = sign * (exp==0 ? man*2^-9 : 2^(exp-7) * (1 + man/8)),
+// codes 0x7F/0xFF are NaN. E4M3 is a subset of FP16: the bridge output
+// must be bit-exact against the host reference.
+
+__global__ void k_fp8_cvt(const uint8_t* in, unsigned short* out) {
+  int i = threadIdx.x;
+  out[i] = bridge::e4m3_to_f16(in[i]);
+}
+
+void test_fp8_cvt() {
+  uint8_t in[256];
+  unsigned short ref[256], dev[256];
+  for (int c = 0; c < 256; c++) {
+    in[c] = (uint8_t)c;
+    int sign = (c & 0x80) ? -1 : 1;
+    int exp = (c >> 3) & 0xF;
+    int man = c & 0x7;
+    float v;
+    if (exp == 15 && man == 7)
+      v = nanf("");                       // E4M3 NaN
+    else if (exp == 0)
+      v = (float)sign * (float)man * 0.001953125f;  // man * 2^-9 (sign kept)
+    else
+      v = (float)sign * ldexpf(1.0f + man / 8.0f, exp - 7);
+    unsigned short bits;
+    if (isnan(v)) {
+      bits = (unsigned short)(0x7E00 | ((in[c] & 0x80) << 8));  // keep NaN sign
+    } else if (v == 0.0f) {
+      bits = (unsigned short)f16_bits(v);  // keep -0.0 sign
+    } else {
+      bits = f16_bits(v);
+    }
+    ref[c] = bits;
+  }
+  uint8_t* d_in;
+  unsigned short* d_out;
+  CHECK_CUDA(cudaMalloc(&d_in, 256));
+  CHECK_CUDA(cudaMalloc(&d_out, 512));
+  CHECK_CUDA(cudaMemcpy(d_in, in, 256, cudaMemcpyHostToDevice));
+  k_fp8_cvt<<<1, 256>>>(d_in, (unsigned short*)d_out);
+  CHECK_CUDA(cudaDeviceSynchronize());
+  CHECK_CUDA(cudaMemcpy(dev, d_out, 512, cudaMemcpyDeviceToHost));
+  int bad = 0;
+  for (int c = 0; c < 256; c++) {
+    if (ref[c] != dev[c]) {
+      if (bad < 6)
+        printf("  fp8 mismatch code 0x%02x: dev 0x%04x ref 0x%04x\n", c,
+               dev[c], ref[c]);
+      bad++;
+    }
+  }
+  EXPECT(bad == 0, "fp8 e4m3 -> f16 exhaustive 256/256 exact");
+  cudaFree(d_in); cudaFree(d_out);
+}
+
+// --------------------------------------------------------- bf16 RNE ----
+void test_bf16_rne() {
+  // exact cases: bf16 values pass through; a value needing round-up
+  // increments; the RNE tie (round bit set, sticky clear, lsb clear)
+  // stays put.
+  struct Case { float f; uint32_t expect; };
+  Case cases[] = {
+      {1.0f, 0x3F80u},
+      // exact tie between 1.0 and 1+2^-8: RNE keeps the even side
+      {1.00390625f, 0x3F80u},
+      // round bit set with sticky: rounds up to the next bf16
+      {1.005859375f, 0x3F81u},
+      // 65504 sits between bf16 65280 and 65536: RNE -> 65536
+      {65504.0f, 0x4780u},
+      {0.0f, 0x0u},
+  };
+  bool all = true;
+  for (const auto& c : cases) {
+    uint32_t got = bridge::f32_to_bf16_rne_bits(c.f);
+    if (got != c.expect) {
+      all = false;
+      printf("  bf16 rne mismatch: f=%f got 0x%04x want 0x%04x\n", c.f, got,
+             c.expect);
+    }
+  }
+  EXPECT(all, "bf16 rne bit tricks");
+}
+
 int main() {
   printf("cu_sm80_on_sm75 conformance suite\n");
   test_mma_adapter();
   test_staged_redline();
   test_mbarrier();
   test_redux();
+  test_fp8_cvt();
+  test_bf16_rne();
   printf(g_failures ? "\nSUITE: %d FAILURES\n" : "\nSUITE: ALL PASS\n",
          g_failures);
   return g_failures ? 1 : 0;

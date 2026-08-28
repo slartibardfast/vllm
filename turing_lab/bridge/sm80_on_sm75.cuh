@@ -18,7 +18,20 @@
 //   evicts hot L2; SASS inspection verifies the hints survived.
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <cuda_fp16.h>
+
+// host/device-agnostic bit reinterpretation (memcpy lowers to a move)
+__host__ __device__ __forceinline__ float u32_as_float(uint32_t x) {
+  float f;
+  memcpy(&f, &x, sizeof(f));
+  return f;
+}
+__host__ __device__ __forceinline__ uint32_t float_as_u32(float f) {
+  uint32_t x;
+  memcpy(&x, &f, sizeof(x));
+  return x;
+}
 
 namespace bridge {
 
@@ -138,14 +151,14 @@ __device__ __forceinline__ int redux_max_u32(int v) {
 
 // ---------------- conversions ----------------
 // bf16 -> f32: bf16 is the top half of f32 (shift, free).
-__device__ __forceinline__ float bf16_to_f32(uint32_t bits) {
-  return __uint_as_float(bits << 16);
+__host__ __device__ __forceinline__ float bf16_to_f32(uint32_t bits) {
+  return u32_as_float(bits << 16);
 }
 
 // f32 -> bf16 round-to-nearest-even (the sm_80 cvt.rn.bf16.f32
 // semantics): round bit + sticky, then mantissa increment.
-__device__ __forceinline__ uint32_t f32_to_bf16_rne_bits(float f) {
-  uint32_t x = __float_as_uint(f);
+__host__ __device__ __forceinline__ uint32_t f32_to_bf16_rne_bits(float f) {
+  uint32_t x = float_as_u32(f);
   uint32_t lsb = (x >> 16) & 1u;
   uint32_t round = (x >> 15) & 1u;
   uint32_t sticky = x & 0x7FFFu;
@@ -156,23 +169,19 @@ __device__ __forceinline__ uint32_t f32_to_bf16_rne_bits(float f) {
 // E4M3 -> FP16 is lossless: sign<<8 | (exp+8)<<7 | man<<7 rebias.
 // LUT-free integer sequence per element (fp8_marlin style does this
 // two-at-a-time); exhaustive 256-case test pins exactness.
-__device__ __forceinline__ uint16_t e4m3_to_f16(uint8_t v) {
+__host__ __device__ __forceinline__ uint16_t e4m3_to_f16(uint8_t v) {
   uint16_t s = uint16_t(v & 0x80u) << 8;         // sign
-  uint16_t e = (v >> 1) & 0x3Fu;                 // exp(4) + man msb
   uint16_t m = uint16_t(v & 0x07u);              // man low bits
-  // E4M3 0bEEEE MMM: FP16 = (E-7+15)<<10 | MMM<<7, specials 0x7F/0xFF.
-  if (e == 0x3Fu) {                              // NaN encoding
-    s |= 0x7E00u | (m << 7);
-    return s;
+  // E4M3 0bEEEE MMM: FP16 = (E-7+15)<<10 | MMM<<7. NaN iff the low 7
+  // bits are all ones (0x7F/0xFF); note 0x7E/0xFE are max finite, not
+  // NaN — a (v>>1)&0x3F test here would misclassify them.
+  if ((v & 0x7Fu) == 0x7Fu) {                    // NaN encoding
+    return s | 0x7E00u;
   }
   uint16_t exp = uint16_t((v >> 3) & 0xFu);
   uint16_t man = m;
-  if (exp == 0) {                                // subnormal: exact in fp16
-    // value = man/8 * 2^-6 -> fp16 normal: exp field = 15-6-3 = adjust
-    uint16_t out = s | (uint16_t(15 - 6 - 3) << 10);
-    // subnormal E4M3 = man * 2^-9; fp16 normal with exp bias so that
-    // man*2^-9 = 1.mm * 2^-9 only if man has msb; handle by float math
-    float f = float(man) * 0.001953125f;         // man / 512
+  if (exp == 0) {  // subnormal E4M3: man * 2^-9, exact in fp16
+    float f = float(man) * 0.001953125f;
     return __half_as_ushort(__float2half(f)) | s;
   }
   uint16_t bits = s | ((uint16_t(exp - 7 + 15)) << 10) | (man << 7);
