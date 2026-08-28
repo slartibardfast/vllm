@@ -38,7 +38,10 @@ __global__ void k_opt(const __half* __restrict__ A,
                       __half* __restrict__ Out, int M, int N, int K,
                       int k_words, int G) {
   __shared__ __half sA[BM][BK + 8];
-  __shared__ uint32_t sQ[BN][BK / 8];
+  // packed words split into even/odd nibble lanes, so a k,k+1 fragment pair
+  // is one byte_perm away and both halves carry the same scale factor
+  __shared__ uint32_t sQE[BN][BK / 8];
+  __shared__ uint32_t sQO[BN][BK / 8];
   __shared__ __half sS[BN];
 
   int n0 = blockIdx.x * BN;
@@ -67,13 +70,15 @@ __global__ void k_opt(const __half* __restrict__ A,
       *reinterpret_cast<__half2*>(&sA[r][c4 * 8]) = h0;
       *reinterpret_cast<__half2*>(&sA[r][c4 * 8 + 4]) = h1;
     }
-    // stage packed weights: BN * BK/8 words
+    // stage packed weights, split into even/odd nibble lanes
     for (int i = tid; i < BN * (BK / 8); i += THREADS) {
       int nn = i / (BK / 8), wcol = i % (BK / 8);
       int gn = n0 + nn;
-      sQ[nn][wcol] = (gn < N && k0 + wcol * 8 < K)
-                         ? Q[(long)gn * k_words + (k0 >> 3) + wcol]
-                         : 0u;
+      uint32_t w = (gn < N && k0 + wcol * 8 < K)
+                       ? Q[(long)gn * k_words + (k0 >> 3) + wcol]
+                       : 0u;
+      sQE[nn][wcol] = w & 0x0f0f0f0fu;
+      sQO[nn][wcol] = (w >> 4) & 0x0f0f0f0fu;
     }
     // stage scales for this chunk's group
     int g = k0 / G;
@@ -86,9 +91,10 @@ __global__ void k_opt(const __half* __restrict__ A,
 #pragma unroll
       for (int nt = 0; nt < BN / WARPS_N / 8; nt++) {
         int col = n_base + nt * 8 + gg;
-        uint32_t word = sQ[col][kk / 8 + cc / 2];
-        // spread the lane's nibble pair into half lanes and bias by 1024
-        uint32_t spread = __byte_perm(word, 0, 0x3200 + cc * 2);
+        uint32_t wE = sQE[col][kk / 8];
+        uint32_t wO = sQO[col][kk / 8];
+        // interleave the lane's k, k+1 nibble pair into half lanes, bias 1024
+        uint32_t spread = __byte_perm(wE, wO, 0x0400 + (cc << 8) + cc);
         uint32_t hbits = lop3_or_and(spread, 0x000F000Fu, 0x64006400u);
         __half2 h2 = *reinterpret_cast<__half2*>(&hbits);
         __half2 w2 = __hsub2(h2, bias1032);
