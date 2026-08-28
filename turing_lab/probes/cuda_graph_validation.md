@@ -12,3 +12,14 @@
 
 Runtime lane status: the dense kernel is graph-safe; the split-K graph
 capture is the remaining runtime item.
+
+## Split-K flow: WS-zero replay ordering (OPEN)
+
+The split-K entry accumulates into an fp32 workspace via atomicAdd. For
+graph capture, the WS.zero_() fill and the splitk launch are both
+recorded, but on replay the deterministic wrong value (16.47) persists
+across replays. Root cause: the atomicAdd accumulation pattern requires
+the workspace to be zeroed between replays, but the graph's fill and
+accumulate nodes have a memory dependency that the current capture does
+not express. Fix: use a dedicated memset node between the fill and the
+accumulate, or restructure to use a separate output buffer per split.
