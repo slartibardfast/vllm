@@ -1,0 +1,57 @@
+{
+  "transport": {
+    "can_access_peer": [
+      true,
+      true
+    ],
+    "peer_enabled": true,
+    "p2p": {
+      "ms": 5.719264030456543,
+      "gbps": 43.71191794410716,
+      "latency_us": 22.752000018954277
+    },
+    "staged": {
+      "ms": 21.998160362243652,
+      "gbps": 11.364586669214635,
+      "latency_us": 19.120000302791595
+    }
+  },
+  "strategies": [
+    {
+      "N": 4096,
+      "K": 4096,
+      "M": 1,
+      "single_ms": 0.3031200021505356,
+      "nshard2_ms": 0.5040640234947205,
+      "nshard2_ok": true,
+      "kshard2_ms": 0.5465279817581177,
+      "kshard2_ok": false,
+      "nshard2_speedup": 0.601,
+      "kshard2_speedup": 0.555
+    },
+    {
+      "N": 4096,
+      "K": 4096,
+      "M": 64,
+      "single_ms": 1.1223999857902527,
+      "nshard2_ms": 0.8478080034255981,
+      "nshard2_ok": true,
+      "kshard2_ms": 1.4313600063323975,
+      "kshard2_ok": false,
+      "nshard2_speedup": 1.324,
+      "kshard2_speedup": 0.784
+    },
+    {
+      "N": 4096,
+      "K": 4096,
+      "M": 512,
+      "single_ms": 7.530992031097412,
+      "nshard2_ms": 4.505280017852783,
+      "nshard2_ok": true,
+      "kshard2_ms": 11.313823699951172,
+      "kshard2_ok": false,
+      "nshard2_speedup": 1.672,
+      "kshard2_speedup": 0.666
+    }
+  ]
+}
