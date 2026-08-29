@@ -64,6 +64,16 @@ __device__ __forceinline__ uint32_t smem_addr(const void* s) {
   return (uint32_t)__cvta_generic_to_shared(s);
 }
 
+__device__ __forceinline__ void sts_u32(void* s, uint32_t v) {
+  asm volatile("st.shared.u32 [%0], %1;\n" :: "l"(s), "r"(v));
+}
+
+__device__ __forceinline__ uint32_t lds_u32(const void* s) {
+  uint32_t v;
+  asm volatile("ld.shared.u32 %0, [%1];\n" : "=r"(v) : "l"(s));
+  return v;
+}
+
 __device__ __forceinline__ void sts_v4(void* s, uint32_t r0, uint32_t r1,
                                        uint32_t r2, uint32_t r3) {
   uint32_t a = smem_addr(s);
@@ -85,6 +95,24 @@ __device__ __forceinline__ void lds_v4(uint32_t& r0, uint32_t& r1,
 // dependency, so the group API lowers to compiler scheduling fences.
 // Cross-thread visibility still requires the caller's barrier.
 
+// 32-bit global streaming load (2 fp16 halves or 1 u32)
+__device__ __forceinline__ uint32_t ldg_cs_u32(const void* g) {
+  uint32_t v;
+  asm volatile("ld.global.cs.u32 %0, [%1];\n" : "=r"(v) : "l"(g));
+  return v;
+}
+
+// m16n8k8 f16->f32 MMA (sm_75 native)
+__device__ __forceinline__ void mma_m16n8k8_f32(
+    float& d0, float& d1, float& d2, float& d3,
+    uint32_t a0, uint32_t a1, uint32_t b) {
+  asm volatile(
+    "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
+    "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+    : "+f"(d0), "+f"(d1), "+f"(d2), "+f"(d3)
+    : "r"(a0), "r"(a1), "r"(b));
+}
+
 __device__ __forceinline__ void commit_group() {
   asm volatile("" ::: "memory");
 }
@@ -100,16 +128,6 @@ __device__ __forceinline__ void wait_group() {
 // A/B/C use the documented m16n8k16 fragment layout; the two k8 halves
 // chain D -> D exactly as the sm_80 instruction's sequential fp32
 // k-slice accumulation (arXiv:2208.11174).
-
-__device__ __forceinline__ void mma_m16n8k8_f32(
-    float& d0, float& d1, float& d2, float& d3,
-    uint32_t a0, uint32_t a1, uint32_t b) {
-  asm volatile(
-    "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
-    "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
-    : "+f"(d0), "+f"(d1), "+f"(d2), "+f"(d3)
-    : "r"(a0), "r"(a1), "r"(b));
-}
 
 __device__ __forceinline__ void mma_m16n8k16_f32(
     float* d, const uint32_t* a, const uint32_t* b) {
