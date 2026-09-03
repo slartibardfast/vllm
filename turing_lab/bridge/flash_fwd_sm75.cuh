@@ -25,7 +25,6 @@ namespace bridge_flash {
 constexpr int kBlockRows = 64;   // query rows per CTA
 constexpr int kBlockKV = 64;     // kv rows per tile
 constexpr int kThreads = 128;    // 4 warps
-constexpr int kStride = 72;      // smem row stride (64 + 4 pad), u32-even
 constexpr float kLog2e = 1.4426950408889634f;
 
 __device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
@@ -33,27 +32,22 @@ __device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
          ((uint32_t)__half_as_ushort(__float2half(hi)) << 16);
 }
 
-// B fragment: the two k-pair halves of one (kv row pair, column) from
-// row-major shared memory, packed into one u32 for the mma.
-__device__ __forceinline__ uint32_t load_b(const __half* smem, int kv_row,
-                                           int col) {
-  const __half* p = smem + kv_row * kStride + col;
-  return (uint32_t)__half_as_ushort(p[0]) |
-         ((uint32_t)__half_as_ushort(p[1]) << 16);
-}
-
 // The forward for one (b, h): q/k/v point at the (s, d) head matrix.
+// D in {64, 128}; d=64 double-buffers K/V, d=128 single-buffers (smem).
+template <int D>
 __device__ __forceinline__ void flash_fwd_one(
     const __half* __restrict__ q, const __half* __restrict__ k,
-    const __half* __restrict__ v, __half* __restrict__ out, int s, bool causal,
-    void* smem) {
-  constexpr int D = 64;
+    const __half* __restrict__ v, __half* __restrict__ out, int s,
+    bool causal, void* smem) {
+  constexpr int kStride = D + 8;
+  constexpr bool kDBuf = (D <= 64);
   __half* sQ = reinterpret_cast<__half*>(smem);        // 64 x kStride
   // double-buffered K/V: LDGs for tile nt+1 issue while compute runs
   // on tile nt (the register-staging pipeline; per-thread LDG->STS
   // ordering is scoreboard-enforced, commit/wait are free fences)
-  __half* sK = sQ + kBlockRows * kStride;              // 2 x 64 x kStride
-  __half* sV = sK + 2 * kBlockKV * kStride;            // 2 x 64 x kStride
+  constexpr int kKVBufs = kDBuf ? 2 : 1;
+  __half* sK = sQ + kBlockRows * kStride;              // kKVBufs x 64 x kStride
+  __half* sV = sK + kKVBufs * kBlockKV * kStride;      // kKVBufs x 64 x kStride
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -77,15 +71,15 @@ __device__ __forceinline__ void flash_fwd_one(
 
   // Q A-fragments: qf[ks][0] = {Q[row_lo][ks*8+2t], +1}; [1] = row hi.
   // d=64 -> 8 k8 steps.
-  uint32_t qf[8][2];
+  uint32_t qf[D / 8][2];
 #pragma unroll
-  for (int ks = 0; ks < 8; ks++) {
+  for (int ks = 0; ks < D / 8; ks++) {
     qf[ks][0] = *reinterpret_cast<const uint32_t*>(&sQ[row_lo * kStride + ks * 8 + 2 * t]);
     qf[ks][1] = *reinterpret_cast<const uint32_t*>(&sQ[row_hi * kStride + ks * 8 + 2 * t]);
   }
 
   // ---- iterate K/V tiles ----
-  float acc[8][4];   // O accumulator: 8 d-column groups x 4 rows
+  float acc[D / 8][4];   // O accumulator: D/8 d-column groups x 4 rows
   memset(acc, 0, sizeof(acc));
   float m_lo = -INFINITY, m_hi = -INFINITY;
   float l_lo = 0.f, l_hi = 0.f;
@@ -97,8 +91,9 @@ __device__ __forceinline__ void flash_fwd_one(
 
   // per-thread staging registers for one K/V tile pair:
   // 64*64/128 halves... = 32 u32 per thread for K, 32 for V
-  uint32_t rK[kBlockKV * (D / 2) / kThreads];
-  uint32_t rV[kBlockKV * (D / 2) / kThreads];
+  constexpr int kU32PerTile = kBlockKV * (D / 2) / kThreads;
+  uint32_t rK[kDBuf ? kU32PerTile : 1];
+  uint32_t rV[kDBuf ? kU32PerTile : 1];
   auto load_kv_regs = [&](int nt_) {
     const long k_base = (long)nt_ * kBlockKV;
     for (int i = 0; i < kBlockKV * (D / 2) / kThreads; i++) {
@@ -117,13 +112,29 @@ __device__ __forceinline__ void flash_fwd_one(
     }
   };
 
-  load_kv_regs(0);
+  auto stage_now = [&](int nt_) {   // single-buffer path (d=128)
+    const long k_base = (long)nt_ * kBlockKV;
+    for (int i = 0; i < kU32PerTile; i++) {
+      int idx = tid + i * kThreads;
+      int r = idx / (D / 2), c = (idx % (D / 2)) * 2;
+      bridge::sts_u32(sK + r * kStride + c,
+                      bridge::ldg_cs_u32(k + k_base * D + (long)r * D + c));
+      bridge::sts_u32(sV + r * kStride + c,
+                      bridge::ldg_cs_u32(v + k_base * D + (long)r * D + c));
+    }
+  };
+  if (kDBuf) load_kv_regs(0);
   for (int nt = 0; nt < n_tiles; nt++) {
     const long k_base = (long)nt * kBlockKV;
-    store_kv_smem(nt & 1);
-    __syncthreads();
-    if (nt + 1 < n_tiles) load_kv_regs(nt + 1);  // latency hides behind
-    // the S/softmax/PV work below (scoreboard-ordered per thread)
+    if (kDBuf) {
+      store_kv_smem(nt & 1);
+      __syncthreads();
+      if (nt + 1 < n_tiles) load_kv_regs(nt + 1);  // latency hides behind
+      // the S/softmax/PV work below (scoreboard-ordered per thread)
+    } else {
+      stage_now(nt);
+      __syncthreads();
+    }
 
     // ---- S = Q K^T fragments: st[nt8][r4] ----
 #ifndef FWD_BISECT
@@ -136,13 +147,13 @@ __device__ __forceinline__ void flash_fwd_one(
       for (int r4 = 0; r4 < 4; r4++) st[nt8][r4] = 0.f;
 
 #pragma unroll
-    for (int ks = 0; ks < 8; ks++) {
+    for (int ks = 0; ks < D / 8; ks++) {
 #pragma unroll
       for (int nt8 = 0; nt8 < 8; nt8++) {
         // B = K^T: b = {K[n][k], K[n][k+1]}, n = nt8*8+g, k = ks*8+2t
         // (consecutive halves of one K row = an aligned u32 read)
         uint32_t b = *reinterpret_cast<const uint32_t*>(
-            &sK[(nt & 1) * kBlockKV * kStride + (nt8 * 8 + g) * kStride +
+            &sK[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) + (nt8 * 8 + g) * kStride +
                 ks * 8 + 2 * t]);
         bridge::mma_m16n8k8_f32(st[nt8][0], st[nt8][1], st[nt8][2],
                                 st[nt8][3], qf[ks][0], qf[ks][1], b);
@@ -192,29 +203,27 @@ __device__ __forceinline__ void flash_fwd_one(
     // ---- O correction for the row maxima: rescale the OLD accumulator
     // before adding this tile's contribution ----
 #pragma unroll
-    for (int cc = 0; cc < 8; cc++) {
+    for (int cc = 0; cc < D / 8; cc++) {
       acc[cc][0] *= corr_lo;
       acc[cc][1] *= corr_lo;
       acc[cc][2] *= corr_hi;
       acc[cc][3] *= corr_hi;
     }
 
-    // ---- P = exp2((S - m_new) * scale * log2e) ----
-    float pe[8][4];
-#pragma unroll
-    for (int nt8 = 0; nt8 < 8; nt8++) {
-      pe[nt8][0] = exp2f((st[nt8][0] - m_new_lo) * scale_log2e);
-      pe[nt8][1] = exp2f((st[nt8][1] - m_new_lo) * scale_log2e);
-      pe[nt8][2] = exp2f((st[nt8][2] - m_new_hi) * scale_log2e);
-      pe[nt8][3] = exp2f((st[nt8][3] - m_new_hi) * scale_log2e);
-    }
-    // PV A registers: P's kv columns ARE the S columns, so the A fragment
-    // for k-step ks packs pe[ks] — no output-tile dimension
+    // ---- P = exp2((S - m_new) * scale * log2e), half2-vectorized
+    // (native ex2.approx.f16x2 on sm_75; the A registers fall out
+    // pre-packed as the half2 bit patterns) ----
     uint32_t pfa[8][2];
 #pragma unroll
     for (int ks = 0; ks < 8; ks++) {
-      pfa[ks][0] = pack_half(pe[ks][0], pe[ks][1]);  // row lo, kv pair
-      pfa[ks][1] = pack_half(pe[ks][2], pe[ks][3]);  // row hi
+      __half2 sa = __floats2half2_rn(st[ks][0], st[ks][1]);
+      __half2 sb = __floats2half2_rn(st[ks][2], st[ks][3]);
+      __half2 ea = h2exp2(__hmul2(__hsub2(sa, __float2half2_rn(m_new_lo)),
+                                  __float2half2_rn(scale_log2e)));
+      __half2 eb = h2exp2(__hmul2(__hsub2(sb, __float2half2_rn(m_new_hi)),
+                                  __float2half2_rn(scale_log2e)));
+      pfa[ks][0] = *reinterpret_cast<uint32_t*>(&ea);  // row lo, kv pair
+      pfa[ks][1] = *reinterpret_cast<uint32_t*>(&eb);  // row hi
     }
 
     // ---- P V: O += P x V per k-step and output tile ----
@@ -222,13 +231,13 @@ __device__ __forceinline__ void flash_fwd_one(
     return;
 #endif
 #pragma unroll
-    for (int cc = 0; cc < 8; cc++) {
+    for (int cc = 0; cc < D / 8; cc++) {
 #pragma unroll
       for (int ks = 0; ks < 8; ks++) {
         // B = V: b = {V[k][n], V[k+1][n]}, k = ks*8+2t, n = cc*8+g
-        uint16_t vlo = *(const uint16_t*)&sV[(nt & 1) * kBlockKV * kStride +
+        uint16_t vlo = *(const uint16_t*)&sV[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
                                              (ks * 8 + 2 * t) * kStride + cc * 8 + g];
-        uint16_t vhi = *(const uint16_t*)&sV[(nt & 1) * kBlockKV * kStride +
+        uint16_t vhi = *(const uint16_t*)&sV[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
                                              (ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
         uint32_t b = (uint32_t)vlo | ((uint32_t)vhi << 16);
         bridge::mma_m16n8k8_f32(acc[cc][0], acc[cc][1], acc[cc][2],
@@ -242,9 +251,11 @@ __device__ __forceinline__ void flash_fwd_one(
     // ---- row sums of P (rows lo/hi) via butterfly over t ----
     float psum_lo = 0.f, psum_hi = 0.f;
 #pragma unroll
-    for (int nt8 = 0; nt8 < 8; nt8++) {
-      psum_lo += pe[nt8][0] + pe[nt8][1];
-      psum_hi += pe[nt8][2] + pe[nt8][3];
+    for (int ks = 0; ks < 8; ks++) {
+      float2 fl = __half22float2(*reinterpret_cast<__half2*>(&pfa[ks][0]));
+      float2 fh = __half22float2(*reinterpret_cast<__half2*>(&pfa[ks][1]));
+      psum_lo += fl.x + fl.y;
+      psum_hi += fh.x + fh.y;
     }
 #pragma unroll
     for (int off = 1; off <= 2; off <<= 1) {
@@ -259,7 +270,7 @@ __device__ __forceinline__ void flash_fwd_one(
 
   // ---- epilogue: O / l, write rows < s ----
 #pragma unroll
-  for (int nt8 = 0; nt8 < 8; nt8++) {
+  for (int nt8 = 0; nt8 < D / 8; nt8++) {
     if (q_abs_lo < s) {
       out[(long)q_abs_lo * D + nt8 * 8 + 2 * t] =
           __float2half(acc[nt8][0] / l_lo);
