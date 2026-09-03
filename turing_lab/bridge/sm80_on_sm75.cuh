@@ -65,12 +65,14 @@ __device__ __forceinline__ uint32_t smem_addr(const void* s) {
 }
 
 __device__ __forceinline__ void sts_u32(void* s, uint32_t v) {
-  asm volatile("st.shared.u32 [%0], %1;\n" :: "l"(s), "r"(v));
+  uint32_t a = smem_addr(s);
+  asm volatile("st.shared.u32 [%0], %1;\n" :: "r"(a), "r"(v));
 }
 
 __device__ __forceinline__ uint32_t lds_u32(const void* s) {
+  uint32_t a = smem_addr(s);
   uint32_t v;
-  asm volatile("ld.shared.u32 %0, [%1];\n" : "=r"(v) : "l"(s));
+  asm volatile("ld.shared.u32 %0, [%1];\n" : "=r"(v) : "r"(a));
   return v;
 }
 

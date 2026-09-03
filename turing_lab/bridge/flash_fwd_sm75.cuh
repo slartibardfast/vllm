@@ -59,9 +59,9 @@ __device__ __forceinline__ void flash_fwd_one(
   const int row_hi = row_lo + 8;
   const long q_base = (long)blockIdx.y * kBlockRows;
 
-  // ---- stage Q (fp16 rows, zero-padded past s) ----
-  for (int i = tid; i < kBlockRows * D / 8; i += kThreads) {
-    int r = (i * 2) / D, c = (i * 2) % D;   // c even: 2 halves per u32
+  // ---- stage Q (fp16 rows, zero-padded past s): 2048 u32 total ----
+  for (int i = tid; i < kBlockRows * (D / 2); i += kThreads) {
+    int r = i / (D / 2), c = (i % (D / 2)) * 2;
     __half* dst = sQ + r * kStride + c;
     if (q_base + r < s) {
       const __half* p = q + (long)(q_base + r) * D + c;
@@ -72,12 +72,13 @@ __device__ __forceinline__ void flash_fwd_one(
   }
   __syncthreads();
 
-  // Q A-fragments: qf[st][0] = k pair (2t, 2t+1) of row lo; [1] = row hi
-  uint32_t qf[4][2];
+  // Q A-fragments: qf[ks][0] = {Q[row_lo][ks*8+2t], +1}; [1] = row hi.
+  // d=64 -> 8 k8 steps.
+  uint32_t qf[8][2];
 #pragma unroll
-  for (int st = 0; st < 4; st++) {
-    qf[st][0] = *reinterpret_cast<const uint32_t*>(&sQ[row_lo * kStride + st * 8 + 2 * t]);
-    qf[st][1] = *reinterpret_cast<const uint32_t*>(&sQ[row_hi * kStride + st * 8 + 2 * t]);
+  for (int ks = 0; ks < 8; ks++) {
+    qf[ks][0] = *reinterpret_cast<const uint32_t*>(&sQ[row_lo * kStride + ks * 8 + 2 * t]);
+    qf[ks][1] = *reinterpret_cast<const uint32_t*>(&sQ[row_hi * kStride + ks * 8 + 2 * t]);
   }
 
   // ---- iterate K/V tiles ----
@@ -94,8 +95,8 @@ __device__ __forceinline__ void flash_fwd_one(
   for (int nt = 0; nt < n_tiles; nt++) {
     const long k_base = (long)nt * kBlockKV;
     // ---- stage K, V tiles ----
-    for (int i = tid; i < kBlockKV * D / 8; i += kThreads) {
-      int r = (i * 2) / D, c = (i * 2) % D;   // c even
+    for (int i = tid; i < kBlockKV * (D / 2); i += kThreads) {
+      int r = i / (D / 2), c = (i % (D / 2)) * 2;
       const __half* pk = k + k_base * D + (long)r * D + c;
       const __half* pv = v + k_base * D + (long)r * D + c;
       bridge::sts_u32(sK + r * kStride + c, bridge::ldg_cs_u32(pk));
@@ -114,11 +115,13 @@ __device__ __forceinline__ void flash_fwd_one(
       for (int r4 = 0; r4 < 4; r4++) st[nt8][r4] = 0.f;
 
 #pragma unroll
-    for (int ks = 0; ks < 4; ks++) {
-      const int kv_row = ks * 8 + 2 * t;
+    for (int ks = 0; ks < 8; ks++) {
 #pragma unroll
       for (int nt8 = 0; nt8 < 8; nt8++) {
-        uint32_t b = load_b(sK, kv_row, nt8 * 8 + g);
+        // B = K^T: b = {K[n][k], K[n][k+1]}, n = nt8*8+g, k = ks*8+2t
+        // (consecutive halves of one K row = an aligned u32 read)
+        uint32_t b = *reinterpret_cast<const uint32_t*>(
+            &sK[(nt8 * 8 + g) * kStride + ks * 8 + 2 * t]);
         bridge::mma_m16n8k8_f32(st[nt8][0], st[nt8][1], st[nt8][2],
                                 st[nt8][3], qf[ks][0], qf[ks][1], b);
       }
@@ -150,68 +153,74 @@ __device__ __forceinline__ void flash_fwd_one(
     }
     float m_new_lo = fmaxf(m_lo, rmax_lo);
     float m_new_hi = fmaxf(m_hi, rmax_hi);
-    float corr_lo = (m_lo == -INFINITY) ? 0.f : exp2f(m_lo - m_new_lo);
-    float corr_hi = (m_hi == -INFINITY) ? 0.f : exp2f(m_hi - m_new_hi);
+    // corr rescales old P values exp2((S-m_old)*scale) to the new max:
+    // the exponent difference carries the SAME scale factor
+    float corr_lo = (m_lo == -INFINITY) ? 0.f
+                    : exp2f((m_lo - m_new_lo) * scale_log2e);
+    float corr_hi = (m_hi == -INFINITY) ? 0.f
+                    : exp2f((m_hi - m_new_hi) * scale_log2e);
     if (isinf(m_new_lo)) { m_new_lo = 0.f; corr_lo = 0.f; }
     if (isinf(m_new_hi)) { m_new_hi = 0.f; corr_hi = 0.f; }
+    m_lo = m_new_lo;   // the running max must advance, or every tile's
+    m_hi = m_new_hi;   // corr zeroes the accumulator
 
 #if FWD_BISECT < 2
     return;
 #endif
-#if FWD_BISECT < 2
-    return;
-#endif
-    // ---- P = exp2((S - m_new) * scale * log2e), packed fp16 ----
-    uint32_t pf[4][8][2];
+    // ---- O correction for the row maxima: rescale the OLD accumulator
+    // before adding this tile's contribution ----
 #pragma unroll
-    for (int ks = 0; ks < 4; ks++) {
-      const int kv_row = ks * 8 + 2 * t;
-#pragma unroll
-      for (int nt8 = 0; nt8 < 8; nt8++) {
-        pf[ks][nt8][0] = pack_half(
-            exp2f((st[nt8][0] - m_new_lo) * scale_log2e),
-            exp2f((st[nt8][1] - m_new_lo) * scale_log2e));
-        pf[ks][nt8][1] = pack_half(
-            exp2f((st[nt8][2] - m_new_hi) * scale_log2e),
-            exp2f((st[nt8][3] - m_new_hi) * scale_log2e));
-      }
+    for (int cc = 0; cc < 8; cc++) {
+      acc[cc][0] *= corr_lo;
+      acc[cc][1] *= corr_lo;
+      acc[cc][2] *= corr_hi;
+      acc[cc][3] *= corr_hi;
     }
 
-    // ---- P V: O += P chunks x V, per k8 step ----
+    // ---- P = exp2((S - m_new) * scale * log2e) ----
+    float pe[8][4];
+#pragma unroll
+    for (int nt8 = 0; nt8 < 8; nt8++) {
+      pe[nt8][0] = exp2f((st[nt8][0] - m_new_lo) * scale_log2e);
+      pe[nt8][1] = exp2f((st[nt8][1] - m_new_lo) * scale_log2e);
+      pe[nt8][2] = exp2f((st[nt8][2] - m_new_hi) * scale_log2e);
+      pe[nt8][3] = exp2f((st[nt8][3] - m_new_hi) * scale_log2e);
+    }
+    // PV A registers: P's kv columns ARE the S columns, so the A fragment
+    // for k-step ks packs pe[ks] — no output-tile dimension
+    uint32_t pfa[8][2];
+#pragma unroll
+    for (int ks = 0; ks < 8; ks++) {
+      pfa[ks][0] = pack_half(pe[ks][0], pe[ks][1]);  // row lo, kv pair
+      pfa[ks][1] = pack_half(pe[ks][2], pe[ks][3]);  // row hi
+    }
+
+    // ---- P V: O += P x V per k-step and output tile ----
 #if FWD_BISECT < 3
     return;
 #endif
 #pragma unroll
-    for (int ks = 0; ks < 4; ks++) {
-      const int kv_row = ks * 8 + 2 * t;
+    for (int cc = 0; cc < 8; cc++) {
 #pragma unroll
-      for (int nt8 = 0; nt8 < 8; nt8++) {
-        uint32_t b = load_b(sV, kv_row, nt8 * 8 + g);
-        bridge::mma_m16n8k8_f32(acc[nt8][0], acc[nt8][1], acc[nt8][2],
-                                acc[nt8][3], pf[ks][nt8][0], pf[ks][nt8][1],
-                                b);
+      for (int ks = 0; ks < 8; ks++) {
+        // B = V: b = {V[k][n], V[k+1][n]}, k = ks*8+2t, n = cc*8+g
+        uint16_t vlo = *(const uint16_t*)&sV[(ks * 8 + 2 * t) * kStride + cc * 8 + g];
+        uint16_t vhi = *(const uint16_t*)&sV[(ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
+        uint32_t b = (uint32_t)vlo | ((uint32_t)vhi << 16);
+        bridge::mma_m16n8k8_f32(acc[cc][0], acc[cc][1], acc[cc][2],
+                                acc[cc][3], pfa[ks][0], pfa[ks][1], b);
       }
     }
 
-#if FWD_BISECT < 4
-    return;
-#endif
 #if FWD_BISECT < 4
     return;
 #endif
     // ---- row sums of P (rows lo/hi) via butterfly over t ----
     float psum_lo = 0.f, psum_hi = 0.f;
 #pragma unroll
-    for (int ks = 0; ks < 4; ks++) {
-#pragma unroll
-      for (int nt8 = 0; nt8 < 8; nt8++) {
-        __half2 h2 = *reinterpret_cast<__half2*>(&pf[ks][nt8][0]);
-        float2 f2 = __half22float2(h2);
-        psum_lo += f2.x + f2.y;
-        __half2 h3 = *reinterpret_cast<__half2*>(&pf[ks][nt8][1]);
-        float2 f3 = __half22float2(h3);
-        psum_hi += f3.x + f3.y;
-      }
+    for (int nt8 = 0; nt8 < 8; nt8++) {
+      psum_lo += pe[nt8][0] + pe[nt8][1];
+      psum_hi += pe[nt8][2] + pe[nt8][3];
     }
 #pragma unroll
     for (int off = 1; off <= 2; off <<= 1) {
@@ -221,14 +230,6 @@ __device__ __forceinline__ void flash_fwd_one(
     l_lo = l_lo * corr_lo + psum_lo;
     l_hi = l_hi * corr_hi + psum_hi;
 
-    // ---- O correction for the row maxima ----
-#pragma unroll
-    for (int nt8 = 0; nt8 < 8; nt8++) {
-      acc[nt8][0] *= corr_lo;
-      acc[nt8][1] *= corr_lo;
-      acc[nt8][2] *= corr_hi;
-      acc[nt8][3] *= corr_hi;
-    }
     __syncthreads();
   }
 

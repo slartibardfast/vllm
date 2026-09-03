@@ -28,7 +28,7 @@ int main() {
   int failures = 0;
   for (int causal = 0; causal <= 1; causal++) {
     cudaMemset(o, 0, n * 2);
-    k_fwd<<<dim3(b * h), 128, 3 * 64 * 72 * 2>>>(q, k, v, o, s, causal);
+    k_fwd<<<dim3(b * h, s / 64), 128, 3 * 64 * 72 * 2>>>(q, k, v, o, s, causal);
     cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {
       printf("causal=%d: %s\n", causal, cudaGetErrorString(e));
@@ -62,7 +62,8 @@ int main() {
         for (int nn = 0; nn < D; nn++) {
           double got = (double)__half2float(o[((long)bh * s + m) * D + nn]);
           double d = fabs(got - out_ref[nn]);
-          if (d > max_err) max_err = d;
+          if (d > max_err) { max_err = d;
+            printf("  worst@(bh=%d m=%d n=%d): got %.4f ref %.4f\n", bh, m, nn, got, out_ref[nn]); }
         }
       }
     printf("causal=%d: max_err %.5f %s\n", causal, max_err,
