@@ -609,6 +609,113 @@ index 0000000..3425f94
 +};
 +
 +}  // namespace bridge
+diff --git a/csrc/flash_attn/flash_api.cpp b/csrc/flash_attn/flash_api.cpp
+index dd7a5c3..0274cd3 100644
+--- a/csrc/flash_attn/flash_api.cpp
++++ b/csrc/flash_attn/flash_api.cpp
+@@ -366,7 +366,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x round_mult
+     at::cuda::CUDAGuard device_guard{q.device()};
+ 
+     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
+-    bool is_sm8x_min = cc_major >= 8;
++    bool is_sm8x_min = (cc_major >= 8) || (cc_major == 7 && cc_minor >= 5);  // plan/0006: Turing via the in-tree sub-80 kernel path
+     TORCH_CHECK(is_sm8x_min, "FlashAttention only supports Ampere GPUs or newer.");
+ 
+     auto q_dtype = q.dtype();
+@@ -538,7 +538,7 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
+     at::cuda::CUDAGuard device_guard{q.device()};
+ 
+     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
+-    bool is_sm8x_min = cc_major >= 8;
++    bool is_sm8x_min = (cc_major >= 8) || (cc_major == 7 && cc_minor >= 5);  // plan/0006
+     TORCH_CHECK(is_sm8x_min, "FlashAttention only supports Ampere GPUs or newer.");
+ 
+     auto q_dtype = q.dtype();
+diff --git a/csrc/flash_attn/src/flash_bwd_launch_template.h b/csrc/flash_attn/src/flash_bwd_launch_template.h
+index 72e7a33..f5b3f45 100644
+--- a/csrc/flash_attn/src/flash_bwd_launch_template.h
++++ b/csrc/flash_attn/src/flash_bwd_launch_template.h
+@@ -19,6 +19,11 @@ namespace FLASH_NAMESPACE {
+ #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+ #define ARCH_SUPPORTS_FLASH
+ #define KERNEL_PARAM_MODIFIER __grid_constant__
++#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
++// plan/0006: Turing runs the in-tree sub-80 kernel path
++// (SM75_16x8x8 MMA atom, ldmatrix copy atoms, sync-copy staging)
++#define ARCH_SUPPORTS_FLASH
++#define KERNEL_PARAM_MODIFIER
+ #else
+ #define KERNEL_PARAM_MODIFIER
+ #endif
+diff --git a/csrc/flash_attn/src/flash_fwd_launch_template.h b/csrc/flash_attn/src/flash_fwd_launch_template.h
+index 934e7b9..705919f 100644
+--- a/csrc/flash_attn/src/flash_fwd_launch_template.h
++++ b/csrc/flash_attn/src/flash_fwd_launch_template.h
+@@ -17,6 +17,11 @@ namespace FLASH_NAMESPACE {
+ #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+ #define ARCH_SUPPORTS_FLASH
+ #define KERNEL_PARAM_MODIFIER __grid_constant__
++#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
++// plan/0006: Turing runs the in-tree sub-80 kernel path
++// (SM75_16x8x8 MMA atom, ldmatrix copy atoms, sync-copy staging)
++#define ARCH_SUPPORTS_FLASH
++#define KERNEL_PARAM_MODIFIER
+ #else
+ #define KERNEL_PARAM_MODIFIER
+ #endif
+@@ -163,25 +168,38 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
+ template<typename T, int Headdim, bool Is_causal>
+ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream) {
+     constexpr static int kBlockM = 64;  // Fixed for all head dimensions
+-    // TD [2023-08-28]: nvcc segfaults for headdim 96 with block size 64 x 256,
+-    // and for headdim 192 with block size 64 x 128.
+-    constexpr static int kBlockN = Headdim <= 64 ? 256 : (Headdim <= 128 ? 128 : 64);
++    // plan/0006: the sm_75 build instantiates ONLY the small-tile splitKV
++    // kernels. The 256-wide kBlockN variants blow ptxas up (3.5+ h of
++    // 100% CPU without completing) and exceed the Turing 64KB smem
++    // ceiling anyway. 64x128 / 64x64 fit comfortably and num_splits
++    // stays available for decode parallelism.
++    constexpr static int kBlockN = Headdim <= 64 ? 128 : 64;
+     run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, false, false, T>, Is_causal>(params, stream);
+ }
+ 
+ template<typename T, bool Is_causal>
+ void run_mha_fwd_hdim32(Flash_fwd_params &params, cudaStream_t stream) {
+     constexpr static int Headdim = 32;
++    auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
++    bool is_sm75 = cc_major == 7;  // plan/0006: 64x64 fits the 64KB smem ceiling
+     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
++        if (is_sm75) {
++            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
++        } else {
++            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
++        }
+     });
+ }
+ 
+ template<typename T, bool Is_causal>
+ void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
+     constexpr static int Headdim = 64;
++    auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
++    bool is_sm75 = cc_major == 7;  // plan/0006: 64x64 fits the 64KB smem ceiling
+     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+-        if constexpr(!Is_dropout) {
++        if (is_sm75) {
++            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
++        } else if constexpr(!Is_dropout) {
+             // Using 8 warps is 18% slower for seqlen=2k, 2 warps is 5% slower
+             // Using block size (64 x 256) is 27% slower for seqlen=2k
+             // Using block size (256 x 64) is 85% slower for seqlen=2k, because of register spilling
+@@ -225,7 +243,7 @@ template<typename T, bool Is_causal>
+ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
+     constexpr static int Headdim = 128;
+     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
+-    bool is_sm8x = cc_major == 8 && cc_minor > 0;
++    bool is_sm8x = (cc_major == 8 && cc_minor > 0) || cc_major == 7;  // plan/0006: Turing uses the small-tile path
+     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+         if constexpr(!Is_dropout) {
+             // For sm86 or sm89, 64 x 64 is the fastest for causal (because it's square),
 diff --git a/flash_attn/flash_attn_interface.py b/flash_attn/flash_attn_interface.py
 index 1e041e4..dd91be2 100644
 --- a/flash_attn/flash_attn_interface.py
@@ -644,3 +751,16 @@ index 1e041e4..dd91be2 100644
      out, softmax_lse, S_dmask, rng_state = flash_attn_gpu.fwd(
          q,
          k,
+diff --git a/setup.py b/setup.py
+index a108c41..b239879 100644
+--- a/setup.py
++++ b/setup.py
+@@ -67,7 +67,7 @@ SKIP_CK_BUILD = os.getenv("FLASH_ATTENTION_SKIP_CK_BUILD", "TRUE") == "TRUE" if
+ 
+ @functools.lru_cache(maxsize=None)
+ def cuda_archs() -> str:
+-    return os.getenv("FLASH_ATTN_CUDA_ARCHS", "80;90;100;120").split(";")
++    return os.getenv("FLASH_ATTN_CUDA_ARCHS", "80;90;100;120").split(";")  # sm_75 via FLASH_ATTN_CUDA_ARCHS=75 (plan/0006 quilt)
+ 
+ 
+ def get_platform():
