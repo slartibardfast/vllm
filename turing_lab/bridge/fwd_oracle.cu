@@ -28,7 +28,7 @@ int main() {
   int failures = 0;
   for (int causal = 0; causal <= 1; causal++) {
     cudaMemset(o, 0, n * 2);
-    k_fwd<<<dim3(b * h, s / 64), 128, 3 * 64 * 72 * 2>>>(q, k, v, o, s, causal);
+    k_fwd<<<dim3(b * h, s / 64), 128, 5 * 64 * 72 * 2>>>(q, k, v, o, s, causal);
     cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {
       printf("causal=%d: %s\n", causal, cudaGetErrorString(e));

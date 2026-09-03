@@ -28,13 +28,13 @@ int main() {
     }
     dim3 grid(b * h, s / 64);
     // warmup + timing (causal=1, the serving case)
-    for (int r = 0; r < 3; r++) k_fwd<<<grid, 128, 3*64*72*2>>>(q, k, v, o, s, 1);
+    for (int r = 0; r < 3; r++) k_fwd<<<grid, 128, 5*64*72*2>>>(q, k, v, o, s, 1);
     cudaDeviceSynchronize();
     cudaEvent_t a, e; cudaEventCreate(&a); cudaEventCreate(&e);
     float best = 1e30f;
     for (int r = 0; r < 10; r++) {
       cudaEventRecord(a);
-      k_fwd<<<grid, 128, 3*64*72*2>>>(q, k, v, o, s, 1);
+      k_fwd<<<grid, 128, 5*64*72*2>>>(q, k, v, o, s, 1);
       cudaEventRecord(e); cudaEventSynchronize(e);
       float ms; cudaEventElapsedTime(&ms, a, e);
       if (ms < best) best = ms;

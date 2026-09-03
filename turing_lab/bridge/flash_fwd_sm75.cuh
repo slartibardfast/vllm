@@ -49,8 +49,11 @@ __device__ __forceinline__ void flash_fwd_one(
     void* smem) {
   constexpr int D = 64;
   __half* sQ = reinterpret_cast<__half*>(smem);        // 64 x kStride
-  __half* sK = sQ + kBlockRows * kStride;              // 64 x kStride
-  __half* sV = sK + kBlockKV * kStride;                // 64 x kStride
+  // double-buffered K/V: LDGs for tile nt+1 issue while compute runs
+  // on tile nt (the register-staging pipeline; per-thread LDG->STS
+  // ordering is scoreboard-enforced, commit/wait are free fences)
+  __half* sK = sQ + kBlockRows * kStride;              // 2 x 64 x kStride
+  __half* sV = sK + 2 * kBlockKV * kStride;            // 2 x 64 x kStride
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -92,17 +95,35 @@ __device__ __forceinline__ void flash_fwd_one(
   const int q_abs_lo = (int)q_base + row_lo;
   const int q_abs_hi = q_abs_lo + 8;
 
+  // per-thread staging registers for one K/V tile pair:
+  // 64*64/128 halves... = 32 u32 per thread for K, 32 for V
+  uint32_t rK[kBlockKV * (D / 2) / kThreads];
+  uint32_t rV[kBlockKV * (D / 2) / kThreads];
+  auto load_kv_regs = [&](int nt_) {
+    const long k_base = (long)nt_ * kBlockKV;
+    for (int i = 0; i < kBlockKV * (D / 2) / kThreads; i++) {
+      int idx = tid + i * kThreads;
+      int r = idx / (D / 2), c = (idx % (D / 2)) * 2;
+      rK[i] = bridge::ldg_cs_u32(k + k_base * D + (long)r * D + c);
+      rV[i] = bridge::ldg_cs_u32(v + k_base * D + (long)r * D + c);
+    }
+  };
+  auto store_kv_smem = [&](int buf) {
+    for (int i = 0; i < kBlockKV * (D / 2) / kThreads; i++) {
+      int idx = tid + i * kThreads;
+      int r = idx / (D / 2), c = (idx % (D / 2)) * 2;
+      bridge::sts_u32(sK + buf * kBlockKV * kStride + r * kStride + c, rK[i]);
+      bridge::sts_u32(sV + buf * kBlockKV * kStride + r * kStride + c, rV[i]);
+    }
+  };
+
+  load_kv_regs(0);
   for (int nt = 0; nt < n_tiles; nt++) {
     const long k_base = (long)nt * kBlockKV;
-    // ---- stage K, V tiles ----
-    for (int i = tid; i < kBlockKV * (D / 2); i += kThreads) {
-      int r = i / (D / 2), c = (i % (D / 2)) * 2;
-      const __half* pk = k + k_base * D + (long)r * D + c;
-      const __half* pv = v + k_base * D + (long)r * D + c;
-      bridge::sts_u32(sK + r * kStride + c, bridge::ldg_cs_u32(pk));
-      bridge::sts_u32(sV + r * kStride + c, bridge::ldg_cs_u32(pv));
-    }
+    store_kv_smem(nt & 1);
     __syncthreads();
+    if (nt + 1 < n_tiles) load_kv_regs(nt + 1);  // latency hides behind
+    // the S/softmax/PV work below (scoreboard-ordered per thread)
 
     // ---- S = Q K^T fragments: st[nt8][r4] ----
 #ifndef FWD_BISECT
@@ -121,7 +142,8 @@ __device__ __forceinline__ void flash_fwd_one(
         // B = K^T: b = {K[n][k], K[n][k+1]}, n = nt8*8+g, k = ks*8+2t
         // (consecutive halves of one K row = an aligned u32 read)
         uint32_t b = *reinterpret_cast<const uint32_t*>(
-            &sK[(nt8 * 8 + g) * kStride + ks * 8 + 2 * t]);
+            &sK[(nt & 1) * kBlockKV * kStride + (nt8 * 8 + g) * kStride +
+                ks * 8 + 2 * t]);
         bridge::mma_m16n8k8_f32(st[nt8][0], st[nt8][1], st[nt8][2],
                                 st[nt8][3], qf[ks][0], qf[ks][1], b);
       }
@@ -204,8 +226,10 @@ __device__ __forceinline__ void flash_fwd_one(
 #pragma unroll
       for (int ks = 0; ks < 8; ks++) {
         // B = V: b = {V[k][n], V[k+1][n]}, k = ks*8+2t, n = cc*8+g
-        uint16_t vlo = *(const uint16_t*)&sV[(ks * 8 + 2 * t) * kStride + cc * 8 + g];
-        uint16_t vhi = *(const uint16_t*)&sV[(ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
+        uint16_t vlo = *(const uint16_t*)&sV[(nt & 1) * kBlockKV * kStride +
+                                             (ks * 8 + 2 * t) * kStride + cc * 8 + g];
+        uint16_t vhi = *(const uint16_t*)&sV[(nt & 1) * kBlockKV * kStride +
+                                             (ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
         uint32_t b = (uint32_t)vlo | ((uint32_t)vhi << 16);
         bridge::mma_m16n8k8_f32(acc[cc][0], acc[cc][1], acc[cc][2],
                                 acc[cc][3], pfa[ks][0], pfa[ks][1], b);
