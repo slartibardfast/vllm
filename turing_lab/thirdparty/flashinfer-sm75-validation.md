@@ -15,6 +15,12 @@
   bypassed via FLASHINFER_DISABLE_VERSION_CHECK=1 (harmless on sm_75,
   everything JITs from source).
 
+Single-request decode throughput (median of 50 event-timed forward
+calls, clocks locked 1455 MHz, 2026-09-04): kv=1024: 49.2 us ->
+20.3 tok/s; kv=4096: 73.6 us -> 13.6 tok/s; kv=16384: 155.7 us ->
+6.4 tok/s. This is the attention step alone (per-call wall time
+including wrapper overhead); a full decode step adds the MLP GEMMs.
+
 Consequence: vLLM on sm_75 must not use FlashInfer decode until
 upstream fixes the multi-request kernel; our fork's backend selection
 already prefers the FlashAttention-routed bridge path, so this is a
