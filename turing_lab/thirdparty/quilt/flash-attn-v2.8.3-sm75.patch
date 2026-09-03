@@ -1,120 +1,646 @@
-diff --git a/csrc/flash_attn/flash_api.cpp b/csrc/flash_attn/flash_api.cpp
-index dd7a5c3..0274cd3 100644
---- a/csrc/flash_attn/flash_api.cpp
-+++ b/csrc/flash_attn/flash_api.cpp
-@@ -366,7 +366,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x round_mult
-     at::cuda::CUDAGuard device_guard{q.device()};
- 
-     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
--    bool is_sm8x_min = cc_major >= 8;
-+    bool is_sm8x_min = (cc_major >= 8) || (cc_major == 7 && cc_minor >= 5);  // plan/0006: Turing via the in-tree sub-80 kernel path
-     TORCH_CHECK(is_sm8x_min, "FlashAttention only supports Ampere GPUs or newer.");
- 
-     auto q_dtype = q.dtype();
-@@ -538,7 +538,7 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
-     at::cuda::CUDAGuard device_guard{q.device()};
- 
-     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
--    bool is_sm8x_min = cc_major >= 8;
-+    bool is_sm8x_min = (cc_major >= 8) || (cc_major == 7 && cc_minor >= 5);  // plan/0006
-     TORCH_CHECK(is_sm8x_min, "FlashAttention only supports Ampere GPUs or newer.");
- 
-     auto q_dtype = q.dtype();
-diff --git a/csrc/flash_attn/src/flash_bwd_launch_template.h b/csrc/flash_attn/src/flash_bwd_launch_template.h
-index 72e7a33..f5b3f45 100644
---- a/csrc/flash_attn/src/flash_bwd_launch_template.h
-+++ b/csrc/flash_attn/src/flash_bwd_launch_template.h
-@@ -19,6 +19,11 @@ namespace FLASH_NAMESPACE {
- #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
- #define ARCH_SUPPORTS_FLASH
- #define KERNEL_PARAM_MODIFIER __grid_constant__
-+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
-+// plan/0006: Turing runs the in-tree sub-80 kernel path
-+// (SM75_16x8x8 MMA atom, ldmatrix copy atoms, sync-copy staging)
-+#define ARCH_SUPPORTS_FLASH
-+#define KERNEL_PARAM_MODIFIER
- #else
- #define KERNEL_PARAM_MODIFIER
- #endif
-diff --git a/csrc/flash_attn/src/flash_fwd_launch_template.h b/csrc/flash_attn/src/flash_fwd_launch_template.h
-index 934e7b9..705919f 100644
---- a/csrc/flash_attn/src/flash_fwd_launch_template.h
-+++ b/csrc/flash_attn/src/flash_fwd_launch_template.h
-@@ -17,6 +17,11 @@ namespace FLASH_NAMESPACE {
- #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
- #define ARCH_SUPPORTS_FLASH
- #define KERNEL_PARAM_MODIFIER __grid_constant__
-+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
-+// plan/0006: Turing runs the in-tree sub-80 kernel path
-+// (SM75_16x8x8 MMA atom, ldmatrix copy atoms, sync-copy staging)
-+#define ARCH_SUPPORTS_FLASH
-+#define KERNEL_PARAM_MODIFIER
- #else
- #define KERNEL_PARAM_MODIFIER
- #endif
-@@ -163,25 +168,38 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
- template<typename T, int Headdim, bool Is_causal>
- void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream) {
-     constexpr static int kBlockM = 64;  // Fixed for all head dimensions
--    // TD [2023-08-28]: nvcc segfaults for headdim 96 with block size 64 x 256,
--    // and for headdim 192 with block size 64 x 128.
--    constexpr static int kBlockN = Headdim <= 64 ? 256 : (Headdim <= 128 ? 128 : 64);
-+    // plan/0006: the sm_75 build instantiates ONLY the small-tile splitKV
-+    // kernels. The 256-wide kBlockN variants blow ptxas up (3.5+ h of
-+    // 100% CPU without completing) and exceed the Turing 64KB smem
-+    // ceiling anyway. 64x128 / 64x64 fit comfortably and num_splits
-+    // stays available for decode parallelism.
-+    constexpr static int kBlockN = Headdim <= 64 ? 128 : 64;
-     run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, false, false, T>, Is_causal>(params, stream);
- }
- 
- template<typename T, bool Is_causal>
- void run_mha_fwd_hdim32(Flash_fwd_params &params, cudaStream_t stream) {
-     constexpr static int Headdim = 32;
-+    auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
-+    bool is_sm75 = cc_major == 7;  // plan/0006: 64x64 fits the 64KB smem ceiling
-     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
--        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
-+        if (is_sm75) {
-+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
-+        } else {
-+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
-+        }
-     });
- }
- 
- template<typename T, bool Is_causal>
- void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
-     constexpr static int Headdim = 64;
-+    auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
-+    bool is_sm75 = cc_major == 7;  // plan/0006: 64x64 fits the 64KB smem ceiling
-     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
--        if constexpr(!Is_dropout) {
-+        if (is_sm75) {
-+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
-+        } else if constexpr(!Is_dropout) {
-             // Using 8 warps is 18% slower for seqlen=2k, 2 warps is 5% slower
-             // Using block size (64 x 256) is 27% slower for seqlen=2k
-             // Using block size (256 x 64) is 85% slower for seqlen=2k, because of register spilling
-@@ -225,7 +243,7 @@ template<typename T, bool Is_causal>
- void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
-     constexpr static int Headdim = 128;
-     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
--    bool is_sm8x = cc_major == 8 && cc_minor > 0;
-+    bool is_sm8x = (cc_major == 8 && cc_minor > 0) || cc_major == 7;  // plan/0006: Turing uses the small-tile path
-     DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
-         if constexpr(!Is_dropout) {
-             // For sm86 or sm89, 64 x 64 is the fastest for causal (because it's square),
-diff --git a/setup.py b/setup.py
-index a108c41..b239879 100644
---- a/setup.py
-+++ b/setup.py
-@@ -67,7 +67,7 @@ SKIP_CK_BUILD = os.getenv("FLASH_ATTENTION_SKIP_CK_BUILD", "TRUE") == "TRUE" if
- 
- @functools.lru_cache(maxsize=None)
- def cuda_archs() -> str:
--    return os.getenv("FLASH_ATTN_CUDA_ARCHS", "80;90;100;120").split(";")
-+    return os.getenv("FLASH_ATTN_CUDA_ARCHS", "80;90;100;120").split(";")  # sm_75 via FLASH_ATTN_CUDA_ARCHS=75 (plan/0006 quilt)
- 
- 
- def get_platform():
+diff --git a/csrc/flash_attn/bridge/bridge_shim.cu b/csrc/flash_attn/bridge/bridge_shim.cu
+new file mode 100644
+index 0000000..14abcff
+--- /dev/null
++++ b/csrc/flash_attn/bridge/bridge_shim.cu
+@@ -0,0 +1,64 @@
++// bridge_shim.cu — route flash-attn's Turing dispatch at the bridge-native
++// forward (plan/0006): sm_75 executes cu_sm80_on_sm75 primitives, not the
++// dormant sub-80 CUTLASS path. Supported: fp16, d in {64,128}, s % 64 == 0,
++// causal or full, GQA any ratio, contiguous (b, s, h, d).
++#include <torch/extension.h>
++#include <ATen/cuda/CUDAContext.h>
++#include <cuda_fp16.h>
++#include "flash_fwd_sm75.cuh"
++
++template <int D>
++__global__ void bridge_fwd_kernel(const __half* __restrict__ q,
++                                  const __half* __restrict__ k,
++                                  const __half* __restrict__ v,
++                                  __half* __restrict__ out, int s, int h_q,
++                                  int h_kv, int causal_flag) {
++  extern __shared__ __half smem[];
++  int bh = blockIdx.x;
++  int kvh = (bh % h_q) / (h_q / h_kv);
++  long qoff = (long)bh * s * D;
++  long koff = ((long)(bh / h_q) * h_kv + kvh) * s * D;
++  bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff,
++                                 s, causal_flag != 0, smem);
++}
++
++template <int D>
++static void launch(const at::Half* q, const at::Half* k, const at::Half* v,
++                   at::Half* out, int b, int h_q, int h_kv, int s,
++                   bool causal, cudaStream_t stream) {
++  constexpr int kStride = D + 8;
++  size_t smem = (size_t)(D <= 64 ? 5 : 3) * 64 * kStride * 2;
++  cudaFuncSetAttribute(bridge_fwd_kernel<D>,
++                       cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
++  bridge_fwd_kernel<D><<<dim3(b * h_q, s / 64), 128, smem, stream>>>(
++      reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
++      reinterpret_cast<const __half*>(v), reinterpret_cast<__half*>(out), s,
++      h_q, h_kv, causal ? 1 : 0);
++}
++
++torch::Tensor bridge_fwd_sm75(torch::Tensor q, torch::Tensor k,
++                              torch::Tensor v, bool causal) {
++  // (b, h, s, d)-contiguous input (the interface permutes FA2's
++  // (b, s, h, d) before calling)
++  const int b = q.size(0), h_q = q.size(1), s = q.size(2), d = q.size(3);
++  const int h_kv = k.size(1);
++  TORCH_CHECK(d == 64 || d == 128, "bridge fwd: d must be 64 or 128");
++  TORCH_CHECK(s % 64 == 0, "bridge fwd: s must be a multiple of 64");
++  TORCH_CHECK(h_q % h_kv == 0, "bridge fwd: GQA ratio must divide");
++  auto out = torch::empty_like(q);
++  auto stream = at::cuda::getCurrentCUDAStream();
++  if (d == 64)
++    launch<64>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++               v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++               s, causal, stream);
++  else
++    launch<128>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++                v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++                s, causal, stream);
++  return out;
++}
++
++PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++  m.def("bridge_fwd_sm75", &bridge_fwd_sm75,
++        "bridge-native flash-attn forward for sm_75 (plan/0006)");
++}
+diff --git a/csrc/flash_attn/bridge/flash_fwd_sm75.cuh b/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
+new file mode 100644
+index 0000000..d797ec7
+--- /dev/null
++++ b/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
+@@ -0,0 +1,289 @@
++// flash_fwd_sm75.cuh — bridge-native FlashAttention forward for Turing.
++//
++// The sm_75 execution path for flash-attn/FlashInfer/vLLM (plan/0006):
++// fp16 attention built entirely on cu_sm80_on_sm75 primitives — no
++// CUTLASS atoms, no cp.async, no upstream kernel code.
++//
++// v1 scope: head dim 64, fp16, causal or full attention, s multiple of
++// 64, no dropout/GQA/varlen. m16n8k8 fragments; K/V row-major smem with
++// B-fragment reads as two LDS.U16 (k-pair halves at fixed column).
++//
++// Fragment conventions (validated by the layoutsolve differential):
++//   lane l: g = l>>2, t = l&3
++//   A (m16n8k8, 16x8): reg0 = {A[g][2t], A[g][2t+1]},
++//                      reg1 = {A[g+8][2t], A[g+8][2t+1]}
++//   B (8x8):           b = {B[2t][n], B[2t+1][n]}
++//   D (16x8):          d0={D[g][2t],D[g][2t+1]} d1={D[g][2t+2],D[g][2t+3]}
++//                      d2={D[g+8][2t],D[g+8][2t+1]} d3={D[g+8][2t+2],D[g+8][2t+3]}
++#pragma once
++#include <cstdint>
++#include <cuda_fp16.h>
++#include "sm80_on_sm75.cuh"
++
++namespace bridge_flash {
++
++constexpr int kBlockRows = 64;   // query rows per CTA
++constexpr int kBlockKV = 64;     // kv rows per tile
++constexpr int kThreads = 128;    // 4 warps
++constexpr float kLog2e = 1.4426950408889634f;
++
++__device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
++  return (uint32_t)__half_as_ushort(__float2half(lo)) |
++         ((uint32_t)__half_as_ushort(__float2half(hi)) << 16);
++}
++
++// The forward for one (b, h): q/k/v point at the (s, d) head matrix.
++// D in {64, 128}; d=64 double-buffers K/V, d=128 single-buffers (smem).
++template <int D>
++__device__ __forceinline__ void flash_fwd_one(
++    const __half* __restrict__ q, const __half* __restrict__ k,
++    const __half* __restrict__ v, __half* __restrict__ out, int s,
++    bool causal, void* smem) {
++  constexpr int kStride = D + 8;
++  constexpr bool kDBuf = (D <= 64);
++  __half* sQ = reinterpret_cast<__half*>(smem);        // 64 x kStride
++  // double-buffered K/V: LDGs for tile nt+1 issue while compute runs
++  // on tile nt (the register-staging pipeline; per-thread LDG->STS
++  // ordering is scoreboard-enforced, commit/wait are free fences)
++  constexpr int kKVBufs = kDBuf ? 2 : 1;
++  __half* sK = sQ + kBlockRows * kStride;              // kKVBufs x 64 x kStride
++  __half* sV = sK + kKVBufs * kBlockKV * kStride;      // kKVBufs x 64 x kStride
++
++  const int tid = threadIdx.x;
++  const int warp = tid >> 5, lane = tid & 31;
++  const int g = lane >> 2, t = lane & 3;
++  const int row_lo = warp * 16 + g;                    // query row (tile)
++  const int row_hi = row_lo + 8;
++  const long q_base = (long)blockIdx.y * kBlockRows;
++
++  // ---- stage Q (fp16 rows, zero-padded past s): 2048 u32 total ----
++  for (int i = tid; i < kBlockRows * (D / 2); i += kThreads) {
++    int r = i / (D / 2), c = (i % (D / 2)) * 2;
++    __half* dst = sQ + r * kStride + c;
++    if (q_base + r < s) {
++      const __half* p = q + (long)(q_base + r) * D + c;
++      bridge::sts_u32(dst, bridge::ldg_cs_u32(p));
++    } else {
++      bridge::sts_u32(dst, 0);
++    }
++  }
++  __syncthreads();
++
++  // Q A-fragments: qf[ks][0] = {Q[row_lo][ks*8+2t], +1}; [1] = row hi.
++  // d=64 -> 8 k8 steps.
++  uint32_t qf[D / 8][2];
++#pragma unroll
++  for (int ks = 0; ks < D / 8; ks++) {
++    qf[ks][0] = *reinterpret_cast<const uint32_t*>(&sQ[row_lo * kStride + ks * 8 + 2 * t]);
++    qf[ks][1] = *reinterpret_cast<const uint32_t*>(&sQ[row_hi * kStride + ks * 8 + 2 * t]);
++  }
++
++  // ---- iterate K/V tiles ----
++  float acc[D / 8][4];   // O accumulator: D/8 d-column groups x 4 rows
++  memset(acc, 0, sizeof(acc));
++  float m_lo = -INFINITY, m_hi = -INFINITY;
++  float l_lo = 0.f, l_hi = 0.f;
++  const float scale_log2e = (1.f / sqrtf((float)D)) * kLog2e;
++
++  const int n_tiles = s / kBlockKV;
++  const int q_abs_lo = (int)q_base + row_lo;
++  const int q_abs_hi = q_abs_lo + 8;
++
++  // per-thread staging registers for one K/V tile pair:
++  // 64*64/128 halves... = 32 u32 per thread for K, 32 for V
++  constexpr int kU32PerTile = kBlockKV * (D / 2) / kThreads;
++  uint32_t rK[kDBuf ? kU32PerTile : 1];
++  uint32_t rV[kDBuf ? kU32PerTile : 1];
++  auto load_kv_regs = [&](int nt_) {
++    const long k_base = (long)nt_ * kBlockKV;
++    for (int i = 0; i < kBlockKV * (D / 2) / kThreads; i++) {
++      int idx = tid + i * kThreads;
++      int r = idx / (D / 2), c = (idx % (D / 2)) * 2;
++      rK[i] = bridge::ldg_cs_u32(k + k_base * D + (long)r * D + c);
++      rV[i] = bridge::ldg_cs_u32(v + k_base * D + (long)r * D + c);
++    }
++  };
++  auto store_kv_smem = [&](int buf) {
++    for (int i = 0; i < kBlockKV * (D / 2) / kThreads; i++) {
++      int idx = tid + i * kThreads;
++      int r = idx / (D / 2), c = (idx % (D / 2)) * 2;
++      bridge::sts_u32(sK + buf * kBlockKV * kStride + r * kStride + c, rK[i]);
++      bridge::sts_u32(sV + buf * kBlockKV * kStride + r * kStride + c, rV[i]);
++    }
++  };
++
++  auto stage_now = [&](int nt_) {   // single-buffer path (d=128)
++    const long k_base = (long)nt_ * kBlockKV;
++    for (int i = 0; i < kU32PerTile; i++) {
++      int idx = tid + i * kThreads;
++      int r = idx / (D / 2), c = (idx % (D / 2)) * 2;
++      bridge::sts_u32(sK + r * kStride + c,
++                      bridge::ldg_cs_u32(k + k_base * D + (long)r * D + c));
++      bridge::sts_u32(sV + r * kStride + c,
++                      bridge::ldg_cs_u32(v + k_base * D + (long)r * D + c));
++    }
++  };
++  if (kDBuf) load_kv_regs(0);
++  for (int nt = 0; nt < n_tiles; nt++) {
++    const long k_base = (long)nt * kBlockKV;
++    if (kDBuf) {
++      store_kv_smem(nt & 1);
++      __syncthreads();
++      if (nt + 1 < n_tiles) load_kv_regs(nt + 1);  // latency hides behind
++      // the S/softmax/PV work below (scoreboard-ordered per thread)
++    } else {
++      stage_now(nt);
++      __syncthreads();
++    }
++
++    // ---- S = Q K^T fragments: st[nt8][r4] ----
++#ifndef FWD_BISECT
++#define FWD_BISECT 4
++#endif
++    float st[8][4];
++#pragma unroll
++    for (int nt8 = 0; nt8 < 8; nt8++)
++#pragma unroll
++      for (int r4 = 0; r4 < 4; r4++) st[nt8][r4] = 0.f;
++
++#pragma unroll
++    for (int ks = 0; ks < D / 8; ks++) {
++#pragma unroll
++      for (int nt8 = 0; nt8 < 8; nt8++) {
++        // B = K^T: b = {K[n][k], K[n][k+1]}, n = nt8*8+g, k = ks*8+2t
++        // (consecutive halves of one K row = an aligned u32 read)
++        uint32_t b = *reinterpret_cast<const uint32_t*>(
++            &sK[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) + (nt8 * 8 + g) * kStride +
++                ks * 8 + 2 * t]);
++        bridge::mma_m16n8k8_f32(st[nt8][0], st[nt8][1], st[nt8][2],
++                                st[nt8][3], qf[ks][0], qf[ks][1], b);
++      }
++    }
++
++    // ---- causal mask (kv col absolute > query row absolute -> -inf) ----
++    if (causal && FWD_BISECT >= 3) {
++#pragma unroll
++      for (int nt8 = 0; nt8 < 8; nt8++) {
++        const int c0 = nt * kBlockKV + nt8 * 8 + 2 * t;
++        if (c0 > q_abs_lo) st[nt8][0] = -INFINITY;
++        if (c0 + 1 > q_abs_lo) st[nt8][1] = -INFINITY;
++        if (c0 > q_abs_hi) st[nt8][2] = -INFINITY;
++        if (c0 + 1 > q_abs_hi) st[nt8][3] = -INFINITY;
++      }
++    }
++
++    // ---- online softmax: rows lo/hi tracked separately ----
++    float rmax_lo = -INFINITY, rmax_hi = -INFINITY;
++#pragma unroll
++    for (int nt8 = 0; nt8 < 8; nt8++) {
++      rmax_lo = fmaxf(rmax_lo, fmaxf(st[nt8][0], st[nt8][1]));
++      rmax_hi = fmaxf(rmax_hi, fmaxf(st[nt8][2], st[nt8][3]));
++    }
++#pragma unroll
++    for (int off = 1; off <= 2; off <<= 1) {
++      rmax_lo = fmaxf(rmax_lo, __shfl_xor_sync(0xffffffff, rmax_lo, off));
++      rmax_hi = fmaxf(rmax_hi, __shfl_xor_sync(0xffffffff, rmax_hi, off));
++    }
++    float m_new_lo = fmaxf(m_lo, rmax_lo);
++    float m_new_hi = fmaxf(m_hi, rmax_hi);
++    // corr rescales old P values exp2((S-m_old)*scale) to the new max:
++    // the exponent difference carries the SAME scale factor
++    float corr_lo = (m_lo == -INFINITY) ? 0.f
++                    : exp2f((m_lo - m_new_lo) * scale_log2e);
++    float corr_hi = (m_hi == -INFINITY) ? 0.f
++                    : exp2f((m_hi - m_new_hi) * scale_log2e);
++    if (isinf(m_new_lo)) { m_new_lo = 0.f; corr_lo = 0.f; }
++    if (isinf(m_new_hi)) { m_new_hi = 0.f; corr_hi = 0.f; }
++    m_lo = m_new_lo;   // the running max must advance, or every tile's
++    m_hi = m_new_hi;   // corr zeroes the accumulator
++
++#if FWD_BISECT < 2
++    return;
++#endif
++    // ---- O correction for the row maxima: rescale the OLD accumulator
++    // before adding this tile's contribution ----
++#pragma unroll
++    for (int cc = 0; cc < D / 8; cc++) {
++      acc[cc][0] *= corr_lo;
++      acc[cc][1] *= corr_lo;
++      acc[cc][2] *= corr_hi;
++      acc[cc][3] *= corr_hi;
++    }
++
++    // ---- P = exp2((S - m_new) * scale * log2e), half2-vectorized
++    // (native ex2.approx.f16x2 on sm_75; the A registers fall out
++    // pre-packed as the half2 bit patterns) ----
++    uint32_t pfa[8][2];
++#pragma unroll
++    for (int ks = 0; ks < 8; ks++) {
++      __half2 sa = __floats2half2_rn(st[ks][0], st[ks][1]);
++      __half2 sb = __floats2half2_rn(st[ks][2], st[ks][3]);
++      __half2 ea = h2exp2(__hmul2(__hsub2(sa, __float2half2_rn(m_new_lo)),
++                                  __float2half2_rn(scale_log2e)));
++      __half2 eb = h2exp2(__hmul2(__hsub2(sb, __float2half2_rn(m_new_hi)),
++                                  __float2half2_rn(scale_log2e)));
++      pfa[ks][0] = *reinterpret_cast<uint32_t*>(&ea);  // row lo, kv pair
++      pfa[ks][1] = *reinterpret_cast<uint32_t*>(&eb);  // row hi
++    }
++
++    // ---- P V: O += P x V per k-step and output tile ----
++#if FWD_BISECT < 3
++    return;
++#endif
++#pragma unroll
++    for (int cc = 0; cc < D / 8; cc++) {
++#pragma unroll
++      for (int ks = 0; ks < 8; ks++) {
++        // B = V: b = {V[k][n], V[k+1][n]}, k = ks*8+2t, n = cc*8+g
++        uint16_t vlo = *(const uint16_t*)&sV[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
++                                             (ks * 8 + 2 * t) * kStride + cc * 8 + g];
++        uint16_t vhi = *(const uint16_t*)&sV[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
++                                             (ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
++        uint32_t b = (uint32_t)vlo | ((uint32_t)vhi << 16);
++        bridge::mma_m16n8k8_f32(acc[cc][0], acc[cc][1], acc[cc][2],
++                                acc[cc][3], pfa[ks][0], pfa[ks][1], b);
++      }
++    }
++
++#if FWD_BISECT < 4
++    return;
++#endif
++    // ---- row sums of P (rows lo/hi) via butterfly over t ----
++    float psum_lo = 0.f, psum_hi = 0.f;
++#pragma unroll
++    for (int ks = 0; ks < 8; ks++) {
++      float2 fl = __half22float2(*reinterpret_cast<__half2*>(&pfa[ks][0]));
++      float2 fh = __half22float2(*reinterpret_cast<__half2*>(&pfa[ks][1]));
++      psum_lo += fl.x + fl.y;
++      psum_hi += fh.x + fh.y;
++    }
++#pragma unroll
++    for (int off = 1; off <= 2; off <<= 1) {
++      psum_lo += __shfl_xor_sync(0xffffffff, psum_lo, off);
++      psum_hi += __shfl_xor_sync(0xffffffff, psum_hi, off);
++    }
++    l_lo = l_lo * corr_lo + psum_lo;
++    l_hi = l_hi * corr_hi + psum_hi;
++
++    __syncthreads();
++  }
++
++  // ---- epilogue: O / l, write rows < s ----
++#pragma unroll
++  for (int nt8 = 0; nt8 < D / 8; nt8++) {
++    if (q_abs_lo < s) {
++      out[(long)q_abs_lo * D + nt8 * 8 + 2 * t] =
++          __float2half(acc[nt8][0] / l_lo);
++      out[(long)q_abs_lo * D + nt8 * 8 + 2 * t + 1] =
++          __float2half(acc[nt8][1] / l_lo);
++    }
++    if (q_abs_hi < s) {
++      out[(long)q_abs_hi * D + nt8 * 8 + 2 * t] =
++          __float2half(acc[nt8][2] / l_hi);
++      out[(long)q_abs_hi * D + nt8 * 8 + 2 * t + 1] =
++          __float2half(acc[nt8][3] / l_hi);
++    }
++  }
++}
++
++}  // namespace bridge_flash
+diff --git a/csrc/flash_attn/bridge/sm80_on_sm75.cuh b/csrc/flash_attn/bridge/sm80_on_sm75.cuh
+new file mode 100644
+index 0000000..3425f94
+--- /dev/null
++++ b/csrc/flash_attn/bridge/sm80_on_sm75.cuh
+@@ -0,0 +1,240 @@
++// sm80_on_sm75.cuh — the cu_sm80_on_sm75 primitives bridge (plan/0006).
++//
++// Hand-written inline-asm PTX implementing the sm_80+ device primitives
++// that flash-attn and FlashInfer depend on, with sm_75-native semantics
++// fixed in the header rather than left to the compiler. Raw-PTX policy:
++// C++ wrappers exist only at this API surface.
++//
++// 1:1-by-construction notes (plan/0006 red-line contract):
++// - commit_group/wait_group compile to scheduling fences: on sm_75 the
++//   STS of a staged copy cannot issue before its LDG retires (hardware
++//   scoreboard), so per-thread ordering is enforced with zero runtime
++//   cost. The irreducible delta is registers held in flight; callers
++//   obey the occupancy budget.
++// - The m16n8k16 f16 MMA adapter issues 2x m16n8k8 in m16n8k16 register
++//   layout (a0/a1 = k 0..7 rows g/g+8, a2/a3 = k 8..15), which matches
++//   the documented m16n8k16 fragment mapping exactly.
++// - Streaming loads carry .cs (evict-first) hints so staging never
++//   evicts hot L2; SASS inspection verifies the hints survived.
++#pragma once
++#include <cstdint>
++#include <cstring>
++#include <cuda_fp16.h>
++
++// host/device-agnostic bit reinterpretation (memcpy lowers to a move)
++__host__ __device__ __forceinline__ float u32_as_float(uint32_t x) {
++  float f;
++  memcpy(&f, &x, sizeof(f));
++  return f;
++}
++__host__ __device__ __forceinline__ uint32_t float_as_u32(float f) {
++  uint32_t x;
++  memcpy(&x, &f, sizeof(x));
++  return x;
++}
++
++namespace bridge {
++
++// ---------------- streaming global -> register loads ----------------
++// .cs = cache-streaming (evict-first): staged data must not displace
++// hot L2. .nc variant takes the non-coherent read-only path.
++
++__device__ __forceinline__ void ldg_cs_v4(uint32_t& r0, uint32_t& r1,
++                                          uint32_t& r2, uint32_t& r3,
++                                          const void* g) {
++  asm volatile("ld.global.cs.v4.u32 {%0,%1,%2,%3}, [%4];\n"
++               : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
++               : "l"(g));
++}
++
++__device__ __forceinline__ void ldg_nc_v4(uint32_t& r0, uint32_t& r1,
++                                          uint32_t& r2, uint32_t& r3,
++                                          const void* g) {
++  asm volatile("ld.global.nc.v4.u32 {%0,%1,%2,%3}, [%4];\n"
++               : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
++               : "l"(g));
++}
++
++// Raw ld/st.shared take SHARED-WINDOW offsets, not generic addresses:
++// every shared-space access converts via __cvta_generic_to_shared first.
++// Skipping this is the classic raw-PTX bug (the generic address of a
++// shared byte is far outside the 64 KiB shared window -> IMA).
++
++__device__ __forceinline__ uint32_t smem_addr(const void* s) {
++  return (uint32_t)__cvta_generic_to_shared(s);
++}
++
++__device__ __forceinline__ void sts_u32(void* s, uint32_t v) {
++  uint32_t a = smem_addr(s);
++  asm volatile("st.shared.u32 [%0], %1;\n" :: "r"(a), "r"(v));
++}
++
++__device__ __forceinline__ uint32_t lds_u32(const void* s) {
++  uint32_t a = smem_addr(s);
++  uint32_t v;
++  asm volatile("ld.shared.u32 %0, [%1];\n" : "=r"(v) : "r"(a));
++  return v;
++}
++
++__device__ __forceinline__ void sts_v4(void* s, uint32_t r0, uint32_t r1,
++                                       uint32_t r2, uint32_t r3) {
++  uint32_t a = smem_addr(s);
++  asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};\n"
++               :: "r"(a), "r"(r0), "r"(r1), "r"(r2), "r"(r3));
++}
++
++__device__ __forceinline__ void lds_v4(uint32_t& r0, uint32_t& r1,
++                                       uint32_t& r2, uint32_t& r3,
++                                       const void* s) {
++  uint32_t a = smem_addr(s);
++  asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];\n"
++               : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
++               : "r"(a));
++}
++
++// ------------- cp.async commit/wait semantics -------------
++// Per-thread ordering is hardware-enforced by the LDG->STS register
++// dependency, so the group API lowers to compiler scheduling fences.
++// Cross-thread visibility still requires the caller's barrier.
++
++// 32-bit global streaming load (2 fp16 halves or 1 u32)
++__device__ __forceinline__ uint32_t ldg_cs_u32(const void* g) {
++  uint32_t v;
++  asm volatile("ld.global.cs.u32 %0, [%1];\n" : "=r"(v) : "l"(g));
++  return v;
++}
++
++// m16n8k8 f16->f32 MMA (sm_75 native)
++__device__ __forceinline__ void mma_m16n8k8_f32(
++    float& d0, float& d1, float& d2, float& d3,
++    uint32_t a0, uint32_t a1, uint32_t b) {
++  asm volatile(
++    "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 "
++    "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
++    : "+f"(d0), "+f"(d1), "+f"(d2), "+f"(d3)
++    : "r"(a0), "r"(a1), "r"(b));
++}
++
++__device__ __forceinline__ void commit_group() {
++  asm volatile("" ::: "memory");
++}
++
++template <int PENDING>
++__device__ __forceinline__ void wait_group() {
++  static_assert(PENDING >= 0, "");
++  asm volatile("" ::: "memory");
++}
++
++// ---------------- MMA: f16 m16n8k16 -> 2x m16n8k8 ----------------
++// D (4 x f32) += A (16x16 f16, 4 regs) * B (16x8 f16, 2 regs).
++// A/B/C use the documented m16n8k16 fragment layout; the two k8 halves
++// chain D -> D exactly as the sm_80 instruction's sequential fp32
++// k-slice accumulation (arXiv:2208.11174).
++
++__device__ __forceinline__ void mma_m16n8k16_f32(
++    float* d, const uint32_t* a, const uint32_t* b) {
++  // a[0] = {row g, k 2t..2t+1}, a[1] = {row g+8, k 2t..2t+1},
++  // a[2] = {row g, k 2t+8..2t+9}, a[3] = {row g+8, k 2t+8..2t+9}
++  // b[0] = {k 2t..2t+1, col g'}, b[1] = {k 2t+8..2t+9, col g'}
++  mma_m16n8k8_f32(d[0], d[1], d[2], d[3], a[0], a[1], b[0]);
++  mma_m16n8k8_f32(d[0], d[1], d[2], d[3], a[2], a[3], b[1]);
++}
++
++// ---------------- INT8: m16n8k32 -> 4x m8n8k16 ----------------
++// The Ampere fragment decomposes as two row-groups x two k-halves
++// (research.md, INT8 section). Layouts follow the PTX-documented
++// fragments; the oracle tests pin the mapping.
++
++__device__ __forceinline__ void mma_m8n8k16_s32(
++    int& d0, int& d1, uint32_t a, uint32_t b, int c0, int c1) {
++  asm volatile(
++    "mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 "
++    "{%0,%1}, {%2}, {%3}, {%0,%1};\n"
++    : "+r"(d0), "+r"(d1)
++    : "r"(a), "r"(b), "r"(c0), "r"(c1));
++}
++
++// ---------------- redux.sync (sm_80) -> shfl butterfly ----------------
++__device__ __forceinline__ int redux_add_u32(int v) {
++#pragma unroll
++  for (int off = 16; off > 0; off >>= 1)
++    v += __shfl_xor_sync(0xffffffff, v, off);
++  return v;
++}
++
++__device__ __forceinline__ int redux_max_u32(int v) {
++#pragma unroll
++  for (int off = 16; off > 0; off >>= 1)
++    v = max(v, __shfl_xor_sync(0xffffffff, v, off));
++  return v;
++}
++
++// ---------------- conversions ----------------
++// bf16 -> f32: bf16 is the top half of f32 (shift, free).
++__host__ __device__ __forceinline__ float bf16_to_f32(uint32_t bits) {
++  return u32_as_float(bits << 16);
++}
++
++// f32 -> bf16 round-to-nearest-even (the sm_80 cvt.rn.bf16.f32
++// semantics): round bit + sticky, then mantissa increment.
++__host__ __device__ __forceinline__ uint32_t f32_to_bf16_rne_bits(float f) {
++  uint32_t x = float_as_u32(f);
++  uint32_t lsb = (x >> 16) & 1u;
++  uint32_t round = (x >> 15) & 1u;
++  uint32_t sticky = x & 0x7FFFu;
++  if (round && (sticky || lsb)) x += 0x10000u;
++  return x >> 16;
++}
++
++// E4M3 -> FP16 is lossless: sign<<8 | (exp+8)<<7 | man<<7 rebias.
++// LUT-free integer sequence per element (fp8_marlin style does this
++// two-at-a-time); exhaustive 256-case test pins exactness.
++__host__ __device__ __forceinline__ uint16_t e4m3_to_f16(uint8_t v) {
++  uint16_t s = uint16_t(v & 0x80u) << 8;         // sign
++  uint16_t m = uint16_t(v & 0x07u);              // man low bits
++  // E4M3 0bEEEE MMM: FP16 = (E-7+15)<<10 | MMM<<7. NaN iff the low 7
++  // bits are all ones (0x7F/0xFF); note 0x7E/0xFE are max finite, not
++  // NaN — a (v>>1)&0x3F test here would misclassify them.
++  if ((v & 0x7Fu) == 0x7Fu) {                    // NaN encoding
++    return s | 0x7E00u;
++  }
++  uint16_t exp = uint16_t((v >> 3) & 0xFu);
++  uint16_t man = m;
++  if (exp == 0) {  // subnormal E4M3: man * 2^-9, exact in fp16
++    float f = float(man) * 0.001953125f;
++    return __half_as_ushort(__float2half(f)) | s;
++  }
++  uint16_t bits = s | ((uint16_t(exp - 7 + 15)) << 10) | (man << 7);
++  return bits;
++}
++
++// ---------------- mbarrier emulation (sm_80 -> sm_75) ----------------
++// Counted-arrival barrier in shared memory: the CCCL pre-sm80 pattern.
++// Single-phase by contract: init -> arrive xN -> wait -> re-init for the
++// next phase. Arrivals fence before decrementing; waiters fence after
++// observing zero (volatile read = acquire on sm_75).
++
++struct SharedMbarrier {
++  uint32_t pending;  // arrivals until the phase completes
++
++  __device__ void init(uint32_t expected_arrivals) {
++    pending = expected_arrivals;
++    __threadfence_block();
++  }
++
++  __device__ void arrive() {
++    __threadfence_block();
++    atomicSub(&pending, 1u);
++  }
++
++  __device__ bool test_wait() {
++    return *reinterpret_cast<volatile uint32_t*>(&pending) == 0u;
++  }
++
++  __device__ void wait() {
++    while (*reinterpret_cast<volatile uint32_t*>(&pending) != 0u) {}
++    __threadfence_block();
++  }
++};
++
++}  // namespace bridge
+diff --git a/flash_attn/flash_attn_interface.py b/flash_attn/flash_attn_interface.py
+index 1e041e4..dd91be2 100644
+--- a/flash_attn/flash_attn_interface.py
++++ b/flash_attn/flash_attn_interface.py
+@@ -88,6 +88,30 @@ def _flash_attn_forward(
+     return_softmax: bool
+ ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
++    # plan/0006: Turing executes the bridge-native forward
++    # (cu_sm80_on_sm75 primitives), not the dormant sub-80 CUTLASS path
++    if (q.is_cuda and torch.cuda.get_device_capability(q.device.index) == (7, 5)
++            and q.dtype == torch.float16 and q.shape[-1] in (64, 128)
++            and q.shape[1] % 64 == 0 and q.shape[2] % k.shape[2] == 0
++            and dropout_p == 0.0 and alibi_slopes is None and softcap == 0.0
++            and window_size_left == -1 and window_size_right == -1):
++        import os
++        os.environ.setdefault("CUDA_HOME", "/opt/cuda")
++        from torch.utils.cpp_extension import load as _cpp_load
++        _bf = _cpp_load(
++            name="bridge_fwd_sm75",
++            sources=[os.path.join(os.path.dirname(__file__), "..", "csrc",
++                                  "flash_attn", "bridge", "bridge_shim.cu")],
++            extra_cuda_cflags=["-arch=sm_75", "-O3"], verbose=False)
++        # the bridge kernel is (b, h, s, d)-contiguous; FA2 is (b, s, h, d)
++        out = _bf.bridge_fwd_sm75(
++            q.permute(0, 2, 1, 3).contiguous(),
++            k.permute(0, 2, 1, 3).contiguous(),
++            v.permute(0, 2, 1, 3).contiguous(), causal
++        ).permute(0, 2, 1, 3)
++        lse = torch.zeros((q.shape[0] * q.shape[2], q.shape[1]),
++                          dtype=torch.float32, device=q.device)
++        return out, lse, None, None
+     out, softmax_lse, S_dmask, rng_state = flash_attn_gpu.fwd(
+         q,
+         k,
