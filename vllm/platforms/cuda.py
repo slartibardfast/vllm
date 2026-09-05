@@ -149,6 +149,7 @@ def _get_backend_priorities(
             return [
                 AttentionBackendEnum.FLASHINFER,
                 AttentionBackendEnum.FLASH_ATTN,
+                AttentionBackendEnum.BRIDGE_ATTN,
                 AttentionBackendEnum.TRITON_ATTN,
                 AttentionBackendEnum.FLEX_ATTENTION,
                 AttentionBackendEnum.TURBOQUANT,
@@ -157,6 +158,9 @@ def _get_backend_priorities(
             return [
                 AttentionBackendEnum.FLASH_ATTN,
                 AttentionBackendEnum.FLASHINFER,
+                # plan/0006: on sm_75 the two above fail the capability
+                # gate, so the bridge kernel becomes the execution path
+                AttentionBackendEnum.BRIDGE_ATTN,
                 AttentionBackendEnum.TRITON_ATTN,
                 AttentionBackendEnum.FLEX_ATTENTION,
                 AttentionBackendEnum.TURBOQUANT,

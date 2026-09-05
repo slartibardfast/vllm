@@ -46,6 +46,10 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
         "vllm.v1.attention.backends.flash_attn_diffkv.FlashAttentionDiffKVBackend"
     )
     TRITON_ATTN = "vllm.v1.attention.backends.triton_attn.TritonAttentionBackend"
+    # plan/0006: sm_75 executes the cu_sm80_on_sm75 bridge via the
+    # quilt-patched flash-attn; capability-gated to (7,5) so sm_80+
+    # never resolves here
+    BRIDGE_ATTN = "vllm.v1.attention.backends.bridge_attn.BridgeAttentionBackend"
     TRITON_ATTN_DIFFKV = (
         "vllm.v1.attention.backends.triton_attn_diffkv.TritonAttentionDiffKVBackend"
     )
