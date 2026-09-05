@@ -33,6 +33,7 @@ from vllm.v1.attention.backend import (
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 logger = init_logger(__name__)
+_route_logged = False
 
 
 @dataclass
@@ -201,8 +202,9 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
             raise NotImplementedError(
                 "bridge_attn: fused block-scale output not supported"
             )
-        if not self._logged:
-            self._logged = True
+        global _route_logged
+        if not _route_logged:
+            _route_logged = True
             if attn_metadata.causal is not True:
                 raise NotImplementedError("bridge_attn: causal attention only")
             logger.info(
