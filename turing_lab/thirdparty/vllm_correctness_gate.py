@@ -178,7 +178,10 @@ def arm_b27_tp2():
 
 def arm_b27_tp1():
     arm = "b27_tp1"
-    llm = make_llm(M27, None, tp=1, mml=8192)
+    # chunk at 4096: an 8192-token prompt equal to the default token
+    # budget leaves no room for the decode step and wedges the scheduler
+    llm = make_llm(M27, None, tp=1, mml=8320,
+                   extra=dict(max_num_batched_tokens=4096))
     with open(f"{RES}/b27_tp2_sweep.json") as f:
         ref = json.load(f)
     from vllm import SamplingParams
