@@ -73,10 +73,10 @@ index 0000000..83c0647
 +}
 diff --git a/csrc/flash_attn/bridge/flash_fwd_sm75.cuh b/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
 new file mode 100644
-index 0000000..bcdf098
+index 0000000..8b3e5e6
 --- /dev/null
 +++ b/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,300 @@
 +// flash_fwd_sm75.cuh — bridge-native FlashAttention forward for Turing.
 +//
 +// The sm_75 execution path for flash-attn/FlashInfer/vLLM (plan/0006):
@@ -294,17 +294,22 @@ index 0000000..bcdf098
 +    }
 +
 +    // ---- P = exp2((S - m_new) * scale * log2e), half2-vectorized
-+    // (native ex2.approx.f16x2 on sm_75; the A registers fall out
-+    // pre-packed as the half2 bit patterns) ----
++    // (native ex2.approx.f16x2 on sm_75). S and m are RAW dot products
++    // (the scale folds into the exponent): with real activations they
++    // exceed fp16 range (|S| > 65504), so the subtraction MUST run in
++    // fp32 before the half conversion — packing raw S into half first
++    // saturates to inf and inf - inf is NaN (found by the engine
++    // correctness gate, 2026-09-05). (S - m) <= 0 always, so a large
++    // negative product flushes to -inf in half and exp2 gives 0: safe.
 +    uint32_t pfa[8][2];
 +#pragma unroll
 +    for (int ks = 0; ks < 8; ks++) {
-+      __half2 sa = __floats2half2_rn(st[ks][0], st[ks][1]);
-+      __half2 sb = __floats2half2_rn(st[ks][2], st[ks][3]);
-+      __half2 ea = h2exp2(__hmul2(__hsub2(sa, __float2half2_rn(m_new_lo)),
-+                                  __float2half2_rn(scale_log2e)));
-+      __half2 eb = h2exp2(__hmul2(__hsub2(sb, __float2half2_rn(m_new_hi)),
-+                                  __float2half2_rn(scale_log2e)));
++      float2 dla = make_float2((st[ks][0] - m_new_lo) * scale_log2e,
++                               (st[ks][1] - m_new_lo) * scale_log2e);
++      float2 dlb = make_float2((st[ks][2] - m_new_hi) * scale_log2e,
++                               (st[ks][3] - m_new_hi) * scale_log2e);
++      __half2 ea = h2exp2(__floats2half2_rn(dla.x, dla.y));
++      __half2 eb = h2exp2(__floats2half2_rn(dlb.x, dlb.y));
 +      pfa[ks][0] = *reinterpret_cast<uint32_t*>(&ea);  // row lo, kv pair
 +      pfa[ks][1] = *reinterpret_cast<uint32_t*>(&eb);  // row hi
 +    }

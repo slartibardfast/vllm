@@ -10,7 +10,7 @@ __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
                       __half* out, int s, int causal_flag) {
   extern __shared__ __half smem[];
   long off = (long)blockIdx.x * s * D;
-  bridge_flash::flash_fwd_one<D>(q + off, k + off, v + off, out + off, s,
+  bridge_flash::flash_fwd_one<D>(q + off, k + off, v + off, out + off, s, s, 0,
                                  causal_flag != 0, smem);
 }
 

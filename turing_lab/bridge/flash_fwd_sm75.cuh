@@ -32,13 +32,16 @@ __device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
          ((uint32_t)__half_as_ushort(__float2half(hi)) << 16);
 }
 
-// The forward for one (b, h): q/k/v point at the (s, d) head matrix.
+// The forward for one (b, h): q points at the (sq, d) query block, k/v at
+// the (s, d) KV matrix. Query row 0 sits at absolute position q0
+// (bottom-right causal, the FA2 seqlen_q != seqlen_k contract: q0 = s - sq
+// for a prefill chunk with prefix; q0 = 0 and sq = s for the dense case).
 // D in {64, 128}; d=64 double-buffers K/V, d=128 single-buffers (smem).
 template <int D>
 __device__ __forceinline__ void flash_fwd_one(
     const __half* __restrict__ q, const __half* __restrict__ k,
-    const __half* __restrict__ v, __half* __restrict__ out, int s,
-    bool causal, void* smem) {
+    const __half* __restrict__ v, __half* __restrict__ out, int sq, int s,
+    int q0, bool causal, void* smem) {
   constexpr int kStride = D + 8;
   constexpr bool kDBuf = (D <= 64);
   __half* sQ = reinterpret_cast<__half*>(smem);        // 64 x kStride
@@ -56,11 +59,11 @@ __device__ __forceinline__ void flash_fwd_one(
   const int row_hi = row_lo + 8;
   const long q_base = (long)blockIdx.y * kBlockRows;
 
-  // ---- stage Q (fp16 rows, zero-padded past s): 2048 u32 total ----
+  // ---- stage Q (fp16 rows, zero-padded past sq): 2048 u32 total ----
   for (int i = tid; i < kBlockRows * (D / 2); i += kThreads) {
     int r = i / (D / 2), c = (i % (D / 2)) * 2;
     __half* dst = sQ + r * kStride + c;
-    if (q_base + r < s) {
+    if (q_base + r < sq) {
       const __half* p = q + (long)(q_base + r) * D + c;
       bridge::sts_u32(dst, bridge::ldg_cs_u32(p));
     } else {
@@ -86,7 +89,9 @@ __device__ __forceinline__ void flash_fwd_one(
   const float scale_log2e = (1.f / sqrtf((float)D)) * kLog2e;
 
   const int n_tiles = s / kBlockKV;
-  const int q_abs_lo = (int)q_base + row_lo;
+  // causal compares kv columns against ABSOLUTE query positions; the
+  // output row index stays tile-relative (the chunk's own rows)
+  const int q_abs_lo = q0 + (int)q_base + row_lo;
   const int q_abs_hi = q_abs_lo + 8;
 
   // per-thread staging registers for one K/V tile pair:
@@ -125,7 +130,6 @@ __device__ __forceinline__ void flash_fwd_one(
   };
   if (kDBuf) load_kv_regs(0);
   for (int nt = 0; nt < n_tiles; nt++) {
-    const long k_base = (long)nt * kBlockKV;
     if (kDBuf) {
       store_kv_smem(nt & 1);
       __syncthreads();
@@ -211,17 +215,22 @@ __device__ __forceinline__ void flash_fwd_one(
     }
 
     // ---- P = exp2((S - m_new) * scale * log2e), half2-vectorized
-    // (native ex2.approx.f16x2 on sm_75; the A registers fall out
-    // pre-packed as the half2 bit patterns) ----
+    // (native ex2.approx.f16x2 on sm_75). S and m are RAW dot products
+    // (the scale folds into the exponent): with real activations they
+    // exceed fp16 range (|S| > 65504), so the subtraction MUST run in
+    // fp32 before the half conversion — packing raw S into half first
+    // saturates to inf and inf - inf is NaN (found by the engine
+    // correctness gate, 2026-09-05). (S - m) <= 0 always, so a large
+    // negative product flushes to -inf in half and exp2 gives 0: safe.
     uint32_t pfa[8][2];
 #pragma unroll
     for (int ks = 0; ks < 8; ks++) {
-      __half2 sa = __floats2half2_rn(st[ks][0], st[ks][1]);
-      __half2 sb = __floats2half2_rn(st[ks][2], st[ks][3]);
-      __half2 ea = h2exp2(__hmul2(__hsub2(sa, __float2half2_rn(m_new_lo)),
-                                  __float2half2_rn(scale_log2e)));
-      __half2 eb = h2exp2(__hmul2(__hsub2(sb, __float2half2_rn(m_new_hi)),
-                                  __float2half2_rn(scale_log2e)));
+      float2 dla = make_float2((st[ks][0] - m_new_lo) * scale_log2e,
+                               (st[ks][1] - m_new_lo) * scale_log2e);
+      float2 dlb = make_float2((st[ks][2] - m_new_hi) * scale_log2e,
+                               (st[ks][3] - m_new_hi) * scale_log2e);
+      __half2 ea = h2exp2(__floats2half2_rn(dla.x, dla.y));
+      __half2 eb = h2exp2(__floats2half2_rn(dlb.x, dlb.y));
       pfa[ks][0] = *reinterpret_cast<uint32_t*>(&ea);  // row lo, kv pair
       pfa[ks][1] = *reinterpret_cast<uint32_t*>(&eb);  // row hi
     }
@@ -268,19 +277,21 @@ __device__ __forceinline__ void flash_fwd_one(
     __syncthreads();
   }
 
-  // ---- epilogue: O / l, write rows < s ----
+  // ---- epilogue: O / l, write rows < sq (tile-relative indices) ----
+  const int out_lo = (int)q_base + row_lo;
+  const int out_hi = out_lo + 8;
 #pragma unroll
   for (int nt8 = 0; nt8 < D / 8; nt8++) {
-    if (q_abs_lo < s) {
-      out[(long)q_abs_lo * D + nt8 * 8 + 2 * t] =
+    if (out_lo < sq) {
+      out[(long)out_lo * D + nt8 * 8 + 2 * t] =
           __float2half(acc[nt8][0] / l_lo);
-      out[(long)q_abs_lo * D + nt8 * 8 + 2 * t + 1] =
+      out[(long)out_lo * D + nt8 * 8 + 2 * t + 1] =
           __float2half(acc[nt8][1] / l_lo);
     }
-    if (q_abs_hi < s) {
-      out[(long)q_abs_hi * D + nt8 * 8 + 2 * t] =
+    if (out_hi < sq) {
+      out[(long)out_hi * D + nt8 * 8 + 2 * t] =
           __float2half(acc[nt8][2] / l_hi);
-      out[(long)q_abs_hi * D + nt8 * 8 + 2 * t + 1] =
+      out[(long)out_hi * D + nt8 * 8 + 2 * t + 1] =
           __float2half(acc[nt8][3] / l_hi);
     }
   }
