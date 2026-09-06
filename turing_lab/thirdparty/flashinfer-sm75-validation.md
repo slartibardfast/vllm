@@ -54,9 +54,10 @@ h_q=24, h_kv=4, d=256, fp16, GQA 6:1, page_size=1, NHD paged).
   reference and torch SDPA, which agree with each other. The wrapper
   launches and returns tensors (no launch failure), so this is the
   dangerous failure class: the research's "no SM75 CI machine" (issue
-  #1648) is exactly what silent wrongness looks like. Not usable as a
-  baseline at any head dim; a differential test against torch must gate
-  any future FlashInfer-on-sm75 attempt (upstream PR #3621 remains
+  #1648) is exactly what silent wrongness looks like. DISQUALIFIED by
+  plan/0007 gate 0 (no silent wrongness) - not usable as a baseline at
+  any head dim; a differential test against torch must gate any future
+  FlashInfer-on-sm75 attempt (upstream PR #3621 remains
   unmerged and the fix era in 0.6.18 does not cover this path).
 
 Reported into plan/0007 as the step 0 decode baseline and the step 0
