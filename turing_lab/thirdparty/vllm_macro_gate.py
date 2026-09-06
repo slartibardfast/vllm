@@ -21,6 +21,12 @@ mixed/prefill split: triton "decode" read 120 tok/s at 4x context); every
 row is the MEDIAN OF 3 REPEATS (single runs on this host have shown +-50%
 same-protocol spread — the recorded 2026-09-05 baselines were single runs).
 
+Presentation: records carry the industry layout. ppN = prefill
+(prompt-processing) throughput in tokens/second at N context tokens;
+tgN = decode (generation) throughput, batch 1, at N context tokens;
+tg64x4 = batched-decode aggregate (4 sequences x 64 tokens, tp-scaled).
+All values are tokens/second.
+
 Gate rules:
   1. CONTROL (TRITON_ATTN touches neither the bridge kernel nor its
      headers): every row with a baseline must stay within +-20% of the
@@ -190,8 +196,25 @@ def main():
                "baseline_used": baseline.get("recorded"),
                "verdicts": [(k, v) for k, _, _, v in verdicts]},
               open(HERE / f"vllm-macro-gate-{stamp}.json", "w"), indent=1)
-    md = ["| row | baseline | this run | ratio | verdict |", "|---|---|---|---|---|"] \
-        + md_rows
+
+    def r(backend, tp, row):
+        return results.get(f"tp{tp}:{backend}:{row}")
+
+    md = ["## Throughput (industry format; all values tokens/second, "
+          "medians of 3)", "",
+          "| backend | GPUs | pp512 t/s | pp2048 t/s | tg512 t/s | tg2048 t/s"
+          " | tg64x4 batch t/s |", "|---|---|---|---|---|---|---|---|"]
+    for backend in ("BRIDGE_ATTN", "TRITON_ATTN"):
+        for tp in (1, 2):
+            md.append(
+                f"| {backend} | {tp} | {r(backend, tp, 'ctx512_prefill'):,.0f} "
+                f"| {r(backend, tp, 'ctx2048_prefill'):,.0f} "
+                f"| {r(backend, tp, 'ctx512_decode'):.1f} "
+                f"| {r(backend, tp, 'ctx2048_decode'):.1f} "
+                f"| {r(backend, tp, 'short_decode'):.1f} |")
+    md += ["", "## Verdicts vs baseline", "",
+           "| row | baseline | this run | ratio | verdict |",
+           "|---|---|---|---|---|"] + md_rows
     (HERE / f"vllm-macro-gate-{stamp}.md").write_text("\n".join(md) + "\n")
     print("\n".join(md))
     print(f"\nMACRO GATE: {'GREEN' if failures == 0 else 'RED'} "
