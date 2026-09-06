@@ -28,7 +28,7 @@ int main() {
       v[i] = __float2half(((rand() % 200) - 100) / 100.0f);
     }
     dim3 grid(b * h, s / 64);
-    size_t smem = (size_t)(D <= 64 ? 5 : 3) * 64 * (D + 8) * 2;
+    size_t smem = (size_t)3 * 64 * (D + 8) * 2;
     cudaFuncSetAttribute(k_fwd<64>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     cudaFuncSetAttribute(k_fwd<128>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     // warmup + timing (causal=1, the serving case)

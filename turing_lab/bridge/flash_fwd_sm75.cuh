@@ -43,7 +43,10 @@ __device__ __forceinline__ void flash_fwd_one(
     const __half* __restrict__ v, __half* __restrict__ out, int sq, int s,
     int q0, bool causal, void* smem) {
   constexpr int kStride = D + 8;
-  constexpr bool kDBuf = (D <= 64);
+  // occupancy experiment (step 4b): single-buffering K/V for d=64 halves
+  // smem (46KB -> 27.6KB) so two CTAs fit per SM; the other CTA's compute
+  // hides this CTA's synchronous LDG->STS staging
+  constexpr bool kDBuf = false;
   __half* sQ = reinterpret_cast<__half*>(smem);        // 64 x kStride
   // double-buffered K/V: LDGs for tile nt+1 issue while compute runs
   // on tile nt (the register-staging pipeline; per-thread LDG->STS
@@ -93,6 +96,16 @@ __device__ __forceinline__ void flash_fwd_one(
   // output row index stays tile-relative (the chunk's own rows)
   const int q_abs_lo = q0 + (int)q_base + row_lo;
   const int q_abs_hi = q_abs_lo + 8;
+  // tiles whose first column exceeds this CTA's highest absolute query
+  // row are fully masked: every element of S is -inf, P is 0, and the
+  // tile contributes nothing — stop at the diagonal (FA2 tile skipping).
+  // q_abs_max <= s-1 for any real layout, so nt_end <= n_tiles.
+  int nt_end = n_tiles;
+  if (causal) {
+    const int q_abs_max = q0 + (int)q_base + (kBlockRows - 1);
+    const int last_needed = q_abs_max / kBlockKV + 1;
+    if (last_needed < nt_end) nt_end = last_needed;
+  }
 
   // per-thread staging registers for one K/V tile pair:
   // 64*64/128 halves... = 32 u32 per thread for K, 32 for V
@@ -129,7 +142,7 @@ __device__ __forceinline__ void flash_fwd_one(
     }
   };
   if (kDBuf) load_kv_regs(0);
-  for (int nt = 0; nt < n_tiles; nt++) {
+  for (int nt = 0; nt < nt_end; nt++) {
     if (kDBuf) {
       store_kv_smem(nt & 1);
       __syncthreads();
@@ -150,18 +163,27 @@ __device__ __forceinline__ void flash_fwd_one(
 #pragma unroll
       for (int r4 = 0; r4 < 4; r4++) st[nt8][r4] = 0.f;
 
+    uint32_t kb[2][4];
 #pragma unroll
     for (int ks = 0; ks < D / 8; ks++) {
+      // K B-fragments via ldmatrix: two x4 loads cover all 8 nt8 groups
+      // for this d-octave. Matrix M of group G carries K rows
+      // (4*G+M)*8..+7 over d = ks*8..+8; the x4 output distribution
+      // (row = l/4, colpair = l%4) is exactly {K[n][ks*8+2t], +1},
+      // n = nt8*8 + g.
 #pragma unroll
-      for (int nt8 = 0; nt8 < 8; nt8++) {
-        // B = K^T: b = {K[n][k], K[n][k+1]}, n = nt8*8+g, k = ks*8+2t
-        // (consecutive halves of one K row = an aligned u32 read)
-        uint32_t b = *reinterpret_cast<const uint32_t*>(
-            &sK[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) + (nt8 * 8 + g) * kStride +
-                ks * 8 + 2 * t]);
-        bridge::mma_m16n8k8_f32(st[nt8][0], st[nt8][1], st[nt8][2],
-                                st[nt8][3], qf[ks][0], qf[ks][1], b);
+      for (int grp = 0; grp < 2; grp++) {
+        const __half* arow =
+            sK + (kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
+            ((4 * grp + (lane >> 3)) * 8 + (lane & 7)) * kStride + ks * 8;
+        bridge::ldmatrix_x4(kb[grp][0], kb[grp][1], kb[grp][2], kb[grp][3],
+                            arow);
       }
+#pragma unroll
+      for (int nt8 = 0; nt8 < 8; nt8++)
+        bridge::mma_m16n8k8_f32(st[nt8][0], st[nt8][1], st[nt8][2],
+                                st[nt8][3], qf[ks][0], qf[ks][1],
+                                kb[nt8 >> 2][nt8 & 3]);
     }
 
     // ---- causal mask (kv col absolute > query row absolute -> -inf) ----
@@ -240,17 +262,23 @@ __device__ __forceinline__ void flash_fwd_one(
     return;
 #endif
 #pragma unroll
-    for (int cc = 0; cc < D / 8; cc++) {
+    for (int ks = 0; ks < 8; ks++) {
+      // V B-fragments via ldmatrix.trans: matrix M of group ccg carries V
+      // rows ks*8..+7 over d = (4*ccg+M)*8..+8. The .trans distribution
+      // hands lane l {V[ks*8+2t][(4*ccg+M)*8 + g], +1} — exactly
+      // {V[k][n], V[k+1][n]} with k = ks*8+2t, n = cc*8+g.
+      uint32_t vb[4];
 #pragma unroll
-      for (int ks = 0; ks < 8; ks++) {
-        // B = V: b = {V[k][n], V[k+1][n]}, k = ks*8+2t, n = cc*8+g
-        uint16_t vlo = *(const uint16_t*)&sV[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
-                                             (ks * 8 + 2 * t) * kStride + cc * 8 + g];
-        uint16_t vhi = *(const uint16_t*)&sV[(kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
-                                             (ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
-        uint32_t b = (uint32_t)vlo | ((uint32_t)vhi << 16);
-        bridge::mma_m16n8k8_f32(acc[cc][0], acc[cc][1], acc[cc][2],
-                                acc[cc][3], pfa[ks][0], pfa[ks][1], b);
+      for (int ccg = 0; ccg < D / 32; ccg++) {
+        const __half* vrow =
+            sV + (kDBuf ? (nt & 1) * kBlockKV * kStride : 0) +
+            (ks * 8 + (lane & 7)) * kStride + (4 * ccg + (lane >> 3)) * 8;
+        bridge::ldmatrix_x4_trans(vb[0], vb[1], vb[2], vb[3], vrow);
+#pragma unroll
+        for (int M = 0; M < 4; M++)
+          bridge::mma_m16n8k8_f32(acc[4 * ccg + M][0], acc[4 * ccg + M][1],
+                                  acc[4 * ccg + M][2], acc[4 * ccg + M][3],
+                                  pfa[ks][0], pfa[ks][1], vb[M]);
       }
     }
 
@@ -274,7 +302,11 @@ __device__ __forceinline__ void flash_fwd_one(
     l_lo = l_lo * corr_lo + psum_lo;
     l_hi = l_hi * corr_hi + psum_hi;
 
-    __syncthreads();
+    // single-buffered V/K (d=128) needs the trailing barrier so the next
+    // tile's stage_now cannot clobber smem while warps still read it;
+    // the double-buffered path (d=64) writes the OTHER buffer next, so
+    // the post-store barrier alone suffices.
+    if (!kDBuf) __syncthreads();
   }
 
   // ---- epilogue: O / l, write rows < sq (tile-relative indices) ----

@@ -38,7 +38,7 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale) {
   }
   constexpr int kStride = D + 8;
   constexpr bool kDBuf = (D <= 64);
-  size_t smem = (size_t)(kDBuf ? 5 : 3) * 64 * kStride * 2;
+  size_t smem = (size_t)3 * 64 * kStride * 2;
   cudaFuncSetAttribute(k_fwd<D>, cudaFuncAttributeMaxDynamicSharedMemorySize,
                        (int)smem);
   int failures = 0;

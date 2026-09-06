@@ -92,6 +92,31 @@ __device__ __forceinline__ void lds_v4(uint32_t& r0, uint32_t& r1,
                : "r"(a));
 }
 
+// ------------- ldmatrix (native on sm_75) -------------
+// x4 loads four 8x8 b16 matrices: lanes 0-7 / 8-15 / 16-23 / 24-31 provide
+// the 16B-aligned row addresses of matrices 0..3. Each matrix is then held
+// with the mma fragment distribution: lane l gets matrix M=l/8's pair at
+// (row = l/4, colpair = l%4). With .trans the pair comes from the
+// TRANSPOSED matrix, i.e. lane l holds {M[2*(l%4)][l/4], M[2*(l%4)+1][l/4]}
+// — exactly the mma B-fragment pattern {X[2t][n], X[2t+1][n]}.
+__device__ __forceinline__ void ldmatrix_x4(uint32_t& r0, uint32_t& r1,
+                                            uint32_t& r2, uint32_t& r3,
+                                            const void* p) {
+  uint32_t a = smem_addr(p);
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
+               : "r"(a));
+}
+__device__ __forceinline__ void ldmatrix_x4_trans(uint32_t& r0, uint32_t& r1,
+                                                  uint32_t& r2, uint32_t& r3,
+                                                  const void* p) {
+  uint32_t a = smem_addr(p);
+  asm volatile(
+      "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+      : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
+      : "r"(a));
+}
+
 // ------------- cp.async commit/wait semantics -------------
 // Per-thread ordering is hardware-enforced by the LDG->STS register
 // dependency, so the group API lowers to compiler scheduling fences.
