@@ -62,3 +62,28 @@ h_q=24, h_kv=4, d=256, fp16, GQA 6:1, page_size=1, NHD paged).
 
 Reported into plan/0007 as the step 0 decode baseline and the step 0
 prefill blocker.
+
+## FA2-native same-hardware probe (plan/0007 step 0.2, 2026-09-06)
+
+The installed quilt (flash_attn 2.8.3, editable) exposes FA2's own
+kernels outside the bridge predicate: the raw binding
+`flash_attn_2_cuda.fwd` runs FA2's in-tree sub-sm80 path on this RTX
+6000 (the path every upstream Turing issue assumed, never run).
+
+- d=256 fp16 causal: LAUNCH FAILURE - cudaErrorInvalidValue. Consistent
+  with the smem analysis: the d=256 fwd template needs exactly 65536 B
+  dynamic plus static smem, over Turing's 64 KiB block cap.
+- d=128 fp16 causal (GQA 6:1, ctx 256): RUNS but SILENTLY WRONG -
+  gate 0 max_err 2.20 vs agreeing torch einsum/SDPA references; wrong in
+  every 64-row block (per-block err 2.20/1.27/0.85/0.59, decaying with
+  row index - approximation-shaped), every head; FA2's own softmax_lse
+  is wrong by 1.14; scale-convention hypotheses (no-scale, doubled,
+  log2e-scaled) all ruled out. The defect is inside the sub-sm80 path's
+  score computation itself. DISQUALIFIED by gate 0.
+
+Route C verdict for plan/0007: no FA2 or FlashInfer prefill baseline
+exists on sm_75 at any head dim; FlashInfer decode stands as the only
+third-party same-hardware baseline. The bridge kernel remains the only
+gate-passing tensor-core attention on this hardware at d=64/128 - which
+is precisely why the sub-80 path was declared dormant in plan/0006 and
+the bridge built.
