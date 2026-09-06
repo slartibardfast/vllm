@@ -75,3 +75,55 @@ the kernel itself is not the short-context bottleneck. Backlog (plan
 README): varlen/paged bridge kernel consuming the block table
 directly (removes gather + python loop), d=256 tile restructuring,
 ldmatrix fragment loads.
+
+## Macro gate formalized (2026-09-06)
+
+`vllm_macro_gate.py` is now the mandatory gate at the end of every A/B
+campaign. Protocol v2: {BRIDGE_ATTN, TRITON_ATTN} x {tp1, tp2} under
+gpu-lease (tp1 = gpu0 partition, tp2 = exclusive), clocks attested 1455,
+temperature 0, enforce_eager, prefix caching DISABLED, every row the
+median of 3 repeats. Rows: short-decode (4*tp seqs x 64 tok), and per
+ctx in {512, 2048}: prefill-only (max_tokens=1), decode-phase (derived:
+31 steps over the mixed-minus-prefill difference), mixed. Gate rules:
+control arm (triton) within +-20% of baseline or the campaign is
+INVALID-ENV; bridge arm no row below 0.95x baseline; new rows seed.
+
+Motivation, recorded honestly: an ad-hoc single-run A/B the same night
+showed triton short-decode at 192/300 tok/s vs the recorded 124/212 —
+same protocol, single runs, default prefix caching — and a derived
+"decode" row of 120 tok/s at 4x context (caching contamination).
+Single-run engine numbers on this host are not gate material.
+
+First formal run (kernel 69e91020): RED, as the gate is designed to
+answer — both triton short-decode control rows missed (1.50x, 1.51x vs
+the 2026-09-05 caching-era single-run baselines) and bridge tp2
+ctx512_mixed read 0.78x; no regression verdict is possible against a
+baseline set the control just invalidated, so the baseline was re-seeded
+under protocol v2 (vllm-macro-baseline.json; the 09-05 table above stays
+as historical record). Environment notes: flashinfer drifted 0.6.17 ->
+0.6.18 in the shared venv (cubin stayed 0.6.17); arms bypass the check
+(FLASHINFER_DISABLE_VERSION_CHECK=1) — they execute no flashinfer
+kernels; alignment is a follow-up. Probe shells need CUDA_HOME=/opt/cuda.
+
+Seeded baseline (medians of 3, kernel 69e91020):
+
+| row | bridge tp1 | triton tp1 | bridge tp2 | triton tp2 |
+|---|---|---|---|---|
+| short decode (tok/s) | 56.3 | 188.0 | 23.1 | 317.9 |
+| ctx512 prefill-only (tok/s) | 11,734 | 7,894 | 3,348 | 12,168 |
+| ctx512 decode-phase (tok/s) | 33.3 | 50.7 | 15.5 | 42.4 |
+| ctx512 mixed (tok/s) | 32.9 | 47.5 | 14.8 | 41.4 |
+| ctx2048 prefill-only (tok/s) | 13,376 | 4,259 | 10,122 | 7,567 |
+| ctx2048 decode-phase (tok/s) | 34.5 | 48.1 | 16.4 | 43.6 |
+| ctx2048 mixed (tok/s) | 30.5 | 28.5 | 15.3 | 32.5 |
+
+Reading: bridge prefill-only RISES with context (11.7k -> 13.4k on tp1)
+while triton FALLS (7.9k -> 4.3k) — at ctx2048 the bridge attention runs
+3.1x triton's prefill rate on one card (the causal tile skip at work);
+at ctx512 the bridge per-call dispatch + page-gather still dominates
+(and doubles across TP2 ranks). Decode-phase keeps the recorded shape:
+triton ~48-51 vs bridge 33-35 on tp1 — the zero-padded 64-row Q tile
+and the gather remain the decode backlog. Prefill-only tok/s include the
+fixed engine start-of-call overhead, so ctx512 understates steady-state
+prompt throughput; ctx2048 is the cleaner read. The next A/B campaign
+is judged against this seeded table.
