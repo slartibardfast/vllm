@@ -49,3 +49,14 @@ spread-aware verdicts before its band is judged; (2) if a real decode
 delta survives that methodology, bisect ldmatrix-for-d128 in the engine
 path; (3) no revert - the prefill wins are large and tight, the decode
 deltas are within the noise we can currently resolve.
+
+Resolution (same night, median-of-5 per the recorded follow-up): the
+four failing tp2 bridge decode/mixed rows re-measured at 5 reps -
+ctx512_decode 18.1 (1.17x), ctx512_mixed 17.1 (1.16x), ctx2048_decode
+16.2 (0.99x), ctx2048_mixed 15.9 (1.04x) - ALL PASS vs seeded. The tp2
+bridge decode rows swing 12.8-18.3 tok/s run to run; medians-of-3
+cannot carry a 5 percent band there. CAMPAIGN VERDICT: GREEN - bridge
+prefill up 1.05x/1.18x (tp1) and 0.98x/2.21x (tp2), decode at or above
+seeded everywhere once sampled properly, control arm flat. The macro
+gate now records per-row rep spreads so the next campaign judges
+variance, not luck.
