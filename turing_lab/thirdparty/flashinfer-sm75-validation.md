@@ -38,3 +38,26 @@ quilt-patched upstream package. Engine traffic reaches the bridge
 only through the fork's bridge attention backend (plan/0006 item in
 flight); the FlashInfer multi-request pass above removes the decode
 blocker on their side.
+
+## d=256 baseline - plan/0007 step 0.1 (2026-09-06, flashinfer 0.6.18)
+
+Harness: fi_d256_baseline.py (Qwen3.5/3.8-27B full-attention shape:
+h_q=24, h_kv=4, d=256, fp16, GQA 6:1, page_size=1, NHD paged).
+
+- Decode: CORRECT. max_err 0.00011-0.00049 vs torch reference across
+  uniform, mixed and long kv-length batches. Baseline tg (b=1):
+  16.2 tok/s at kv=1024, 11.8 at kv=4096, 5.2 at kv=16384; 66.2
+  aggregate at b=8, kv=1024. Medians of 3, RTX 6000, 1455 MHz.
+- Prefill (BatchPrefillWithPagedKVCacheWrapper): SILENTLY WRONG in every
+  probed configuration - MHA and GQA, causal and non-causal, d=128 and
+  d=256, ctx 8 to 2048. max_err up to 4.24 against a torch einsum
+  reference and torch SDPA, which agree with each other. The wrapper
+  launches and returns tensors (no launch failure), so this is the
+  dangerous failure class: the research's "no SM75 CI machine" (issue
+  #1648) is exactly what silent wrongness looks like. Not usable as a
+  baseline at any head dim; a differential test against torch must gate
+  any future FlashInfer-on-sm75 attempt (upstream PR #3621 remains
+  unmerged and the fix era in 0.6.18 does not cover this path).
+
+Reported into plan/0007 as the step 0 decode baseline and the step 0
+prefill blocker.
