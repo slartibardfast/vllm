@@ -44,7 +44,7 @@ template <int D>
 __device__ __forceinline__ void flash_fwd_one(
     const __half* __restrict__ q, const __half* __restrict__ k,
     const __half* __restrict__ v, __half* __restrict__ out, int sq, int s,
-    int q0, bool causal, void* smem) {
+    int q0, bool causal, float softcap, void* smem) {
   constexpr int kStride = D + 8;
   constexpr int kBlockKVD = (D == 256) ? 32 : kBlockKV;  // kv rows per tile
   constexpr int kNt8 = kBlockKVD / 8;                    // 8-wide n groups
@@ -205,6 +205,22 @@ __device__ __forceinline__ void flash_fwd_one(
                                 kb[nt8 >> 2][nt8 & 3]);
     }
 
+    // ---- Gemma-style logit softcap (plan/0007): s = cap * tanh(s / cap)
+    // applied to the SCALED scores; with the cap active the exponent
+    // carries log2e alone (the 1/sqrt(D) scale ran before the tanh), and
+    // the fp32-subtract-before-h2exp2 invariant is unchanged. Without the
+    // cap the folded scale_log2e path is bit-identical to before. ----
+    const float exp_scale = (softcap > 0.f) ? kLog2e : scale_log2e;
+    if (softcap > 0.f) {
+      const float kScale = scale_log2e / kLog2e;   // = 1/sqrt(D)
+      const float kInv = 1.f / softcap;   // tanh(scaled / softcap)
+#pragma unroll
+      for (int nt8 = 0; nt8 < kNt8; nt8++)
+#pragma unroll
+        for (int r4 = 0; r4 < 4; r4++)
+          st[nt8][r4] = softcap * tanhf(st[nt8][r4] * kScale * kInv);
+    }
+
     // ---- causal mask (kv col absolute > query row absolute -> -inf) ----
     if (causal && FWD_BISECT >= 3) {
 #pragma unroll
@@ -234,9 +250,9 @@ __device__ __forceinline__ void flash_fwd_one(
     // corr rescales old P values exp2((S-m_old)*scale) to the new max:
     // the exponent difference carries the SAME scale factor
     float corr_lo = (m_lo == -INFINITY) ? 0.f
-                    : exp2f((m_lo - m_new_lo) * scale_log2e);
+                    : exp2f((m_lo - m_new_lo) * exp_scale);
     float corr_hi = (m_hi == -INFINITY) ? 0.f
-                    : exp2f((m_hi - m_new_hi) * scale_log2e);
+                    : exp2f((m_hi - m_new_hi) * exp_scale);
     if (isinf(m_new_lo)) { m_new_lo = 0.f; corr_lo = 0.f; }
     if (isinf(m_new_hi)) { m_new_hi = 0.f; corr_hi = 0.f; }
     m_lo = m_new_lo;   // the running max must advance, or every tile's
@@ -266,10 +282,10 @@ __device__ __forceinline__ void flash_fwd_one(
     uint32_t pfa[kNt8][2];
 #pragma unroll
     for (int ks = 0; ks < kNt8; ks++) {
-      float2 dla = make_float2((st[ks][0] - m_new_lo) * scale_log2e,
-                               (st[ks][1] - m_new_lo) * scale_log2e);
-      float2 dlb = make_float2((st[ks][2] - m_new_hi) * scale_log2e,
-                               (st[ks][3] - m_new_hi) * scale_log2e);
+      float2 dla = make_float2((st[ks][0] - m_new_lo) * exp_scale,
+                               (st[ks][1] - m_new_lo) * exp_scale);
+      float2 dlb = make_float2((st[ks][2] - m_new_hi) * exp_scale,
+                               (st[ks][3] - m_new_hi) * exp_scale);
       __half2 ea = h2exp2(__floats2half2_rn(dla.x, dla.y));
       __half2 eb = h2exp2(__floats2half2_rn(dlb.x, dlb.y));
       pfa[ks][0] = *reinterpret_cast<uint32_t*>(&ea);  // row lo, kv pair

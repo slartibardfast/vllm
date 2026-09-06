@@ -13,18 +13,19 @@
 template <int D>
 __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
                       __half* out, int sq, int s, int q0, int h_q, int h_kv,
-                      int causal_flag) {
+                      int causal_flag, float softcap) {
   extern __shared__ __half smem[];
   int bh = blockIdx.x;                 // b * h_q
   int kv_head = (bh % h_q) / (h_q / h_kv);
   long qoff = (long)bh * sq * D;
   long koff = ((long)(bh / h_q) * h_kv + kv_head) * s * D;
   bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff, sq,
-                                 s, q0, causal_flag != 0, smem);
+                                 s, q0, causal_flag != 0, softcap, smem);
 }
 
 template <int D>
-int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale) {
+int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale,
+             float softcap = 0.f) {
   size_t nq = (size_t)b * h_q * sq * D;
   size_t nkv = (size_t)b * h_kv * s * D;
   __half *q, *k, *v, *o;
@@ -47,7 +48,7 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale) {
   for (int causal = 0; causal <= 1; causal++) {
     cudaMemset(o, 0, nq * 2);
     k_fwd<D><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq, s, q0, h_q,
-                                                    h_kv, causal);
+                                                    h_kv, causal, softcap);
     cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) { printf("d=%d gqa=%d causal=%d: %s\n", D, h_q / h_kv,
                                    causal, cudaGetErrorString(e)); failures++; continue; }
@@ -66,6 +67,7 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale) {
             dot += (double)__half2float(qb[(long)m * D + dd]) *
                    (double)__half2float(kb[(long)kk * D + dd]);
           dot /= sqrt((double)D);
+          if (softcap > 0) dot = softcap * tanh(dot / softcap);
           if (causal && kk > q_abs) dot = -1e30;
           e_exp[kk] = dot;
           if (dot > mx) mx = dot;
@@ -107,6 +109,12 @@ int main() {
   failures += run_case<256>(2, 8, 2, 512, 512, 0, 1);    // d=256 GQA 4:1 dense
   failures += run_case<256>(1, 8, 2, 512, 64, 448, 1);   // chunked d=256 GQA
   failures += run_case<256>(1, 12, 2, 512, 512, 0, 100); // d=256 magnitude
+  failures += run_case<256>(1, 4, 4, 512, 512, 0, 1, 50);   // d=256 softcap 50 (Gemma-style)
+  failures += run_case<256>(1, 8, 2, 512, 64, 448, 1, 50);  // chunked d=256 softcap 50
+  failures += run_case<128>(1, 4, 4, 512, 512, 0, 1, 50);   // d=128 softcap 50
+  failures += run_case<128>(1, 4, 4, 64, 64, 0, 1, 50);     // single tile softcap 50
+  failures += run_case<128>(1, 4, 4, 64, 64, 0, 1, 5);      // single tile softcap 5
+  failures += run_case<128>(1, 4, 4, 64, 64, 0, 1, 1);      // single tile softcap 1
   failures += run_case<128>(4, 8, 8, 256, 64, 192, 1);   // decode shape
   // magnitude class: raw dots past fp16 range (the engine-gate finding)
   failures += run_case<128>(1, 12, 2, 512, 512, 0, 100); // d=128 GQA 6:1, |S_raw| ~ 1e5

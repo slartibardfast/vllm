@@ -110,7 +110,7 @@ def run_arm(backend, tp):
     reps = {r: [] for r in
             ("short_decode", "ctx512_prefill", "ctx512_decode", "ctx512_mixed",
              "ctx2048_prefill", "ctx2048_decode", "ctx2048_mixed")}
-    for _ in range(3):
+    for _ in range(5):
         dt, out = timed("Explain flash attention in one paragraph.", 64, 4 * tp)
         toks = sum(len(o.outputs[0].token_ids) for o in out)
         reps["short_decode"].append(toks / dt)
@@ -158,12 +158,14 @@ def main():
                         "FLASHINFER_DISABLE_VERSION_CHECK": "1",
                         "PATH": "/opt/cuda/bin:" + __import__("os").environ["PATH"]}
             print(f"=== arm {backend} tp{tp} (lease {mode}) ===", flush=True)
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  env={**__import__("os").environ, **env_pass})
-            child_texts[f"{backend}-tp{tp}"] = proc.stdout[-4000:]
-            results.update(parse_child(proc.stdout, backend, tp))
+            arm_log = HERE / f"macro-gate-arm-{backend}-tp{tp}.log"
+            with open(arm_log, "w") as af:
+                proc = subprocess.run(cmd, stdout=af, stderr=subprocess.STDOUT,
+                                      env={**__import__("os").environ, **env_pass})
+            child_texts[f"{backend}-tp{tp}"] = arm_log.read_text()[-4000:]
+            results.update(parse_child(arm_log.read_text(), backend, tp))
             if proc.returncode != 0:
-                print(proc.stdout[-2000:], proc.stderr[-2000:])
+                print(open(arm_log).read()[-2000:])
                 sys.exit(f"arm {backend} tp{tp} failed (rc={proc.returncode})")
 
     verdicts, md_rows = [], []
