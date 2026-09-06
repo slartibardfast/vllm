@@ -53,6 +53,7 @@ def alloc_pages(seq_len):
 
 
 @pytest.mark.parametrize("d,h_q,h_kv", [(64, 4, 4), (64, 8, 2), (128, 8, 8),
+                                                       (256, 24, 4),
                                         (128, 8, 1)])
 @pytest.mark.parametrize("prompt_len", [77, 128, 301])
 def test_prefill_then_decode(d, h_q, h_kv, prompt_len):

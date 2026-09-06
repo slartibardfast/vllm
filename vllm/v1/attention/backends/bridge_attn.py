@@ -10,7 +10,7 @@ per-sequence contiguous tensors and calls the real ``flash_attn_func``
 seqlen_q != seqlen_k bottom-right causal included). The KV-cache write
 is the framework's standard ``do_kv_cache_update`` slot scatter.
 
-Scope guard: capability (7,5) only, fp16, head_dim {64, 128}, causal
+Scope guard: capability (7,5) only, fp16, head_dim {64, 128, 256}, causal
 decoder attention, fp16/auto KV cache. Anything else declines here so
 the selector falls through to the next backend (TRITON_ATTN)."""
 
@@ -106,7 +106,7 @@ class BridgeAttentionBackend(AttentionBackend):
 
     @classmethod
     def supports_head_size(cls, head_size: int) -> bool:
-        return head_size in (64, 128)
+        return head_size in (64, 128, 256)
 
     @classmethod
     def supports_compute_capability(cls, capability) -> bool:

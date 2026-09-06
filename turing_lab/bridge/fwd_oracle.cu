@@ -38,7 +38,9 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale) {
   }
   constexpr int kStride = D + 8;
   constexpr bool kDBuf = (D <= 64);
-  size_t smem = (size_t)3 * 64 * kStride * 2;
+  size_t smem = (D == 256)
+      ? size_t(2) * 32 * kStride * 2  // no sQ; 32-row K+V
+      : size_t(3) * 64 * kStride * 2;
   cudaFuncSetAttribute(k_fwd<D>, cudaFuncAttributeMaxDynamicSharedMemorySize,
                        (int)smem);
   int failures = 0;
@@ -56,7 +58,7 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale) {
       const __half* kb = k + ((long)(bh / h_q) * h_kv + kvh) * s * D;
       const __half* vb = v + ((long)(bh / h_q) * h_kv + kvh) * s * D;
       for (int m = 0; m < sq; m++) {
-        double e_exp[2048], mx = -1e30, denom = 0, out_ref[128];
+        double e_exp[2048], mx = -1e30, denom = 0, out_ref[256];
         const int q_abs = q0 + m;      // bottom-right causal row position
         for (int kk = 0; kk < s; kk++) {
           double dot = 0;
@@ -98,6 +100,13 @@ int main() {
   failures += run_case<128>(1, 8, 1, 512, 512, 0, 1);    // d=128 GQA 8:1 dense
   failures += run_case<64>(1, 4, 4, 384, 128, 256, 1);   // chunked: prefix 256 + 128
   failures += run_case<128>(1, 8, 2, 512, 64, 448, 1);   // chunked d=128 GQA
+  failures += run_case<256>(1, 24, 4, 128, 64, 76, 1);   // d=256 decode leg (77 padded)
+  failures += run_case<256>(1, 24, 4, 128, 128, 0, 1);   // d=256 prefill leg (77 padded)
+  failures += run_case<256>(1, 24, 4, 320, 64, 256, 1);  // d=256 decode leg (301 padded)
+  failures += run_case<256>(1, 4, 4, 512, 512, 0, 1);    // d=256 MHA dense
+  failures += run_case<256>(2, 8, 2, 512, 512, 0, 1);    // d=256 GQA 4:1 dense
+  failures += run_case<256>(1, 8, 2, 512, 64, 448, 1);   // chunked d=256 GQA
+  failures += run_case<256>(1, 12, 2, 512, 512, 0, 100); // d=256 magnitude
   failures += run_case<128>(4, 8, 8, 256, 64, 192, 1);   // decode shape
   // magnitude class: raw dots past fp16 range (the engine-gate finding)
   failures += run_case<128>(1, 12, 2, 512, 512, 0, 100); // d=128 GQA 6:1, |S_raw| ~ 1e5

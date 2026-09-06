@@ -16,7 +16,7 @@ __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
 
 int main() {
   const int b = 4, h = 16; int D = 64;
-  for (D = 64; D <= 128; D *= 2) for (int s : {2048, 8192}) {
+  for (D = 64; D <= 256; D *= 2) for (int s : {2048, 8192}) {
     size_t n = (size_t)b * h * s * D;
     __half *q, *k, *v, *o;
     cudaMallocManaged(&q, n * 2); cudaMallocManaged(&k, n * 2);
@@ -28,19 +28,26 @@ int main() {
       v[i] = __float2half(((rand() % 200) - 100) / 100.0f);
     }
     dim3 grid(b * h, s / 64);
-    size_t smem = (size_t)3 * 64 * (D + 8) * 2;
+    size_t smem = (D == 256)
+        ? size_t(2) * 32 * (D + 8) * 2   // no sQ; 32-row K+V
+        : size_t(3) * 64 * (D + 8) * 2;
     cudaFuncSetAttribute(k_fwd<64>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     cudaFuncSetAttribute(k_fwd<128>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+    cudaFuncSetAttribute(k_fwd<256>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
     // warmup + timing (causal=1, the serving case)
-    for (int r = 0; r < 3; r++) if (D == 64) k_fwd<64><<<grid, 128, smem>>>(q, k, v, o, s, 1);
-      else k_fwd<128><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+    for (int r = 0; r < 3; r++) {
+      if (D == 64) k_fwd<64><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+      else if (D == 128) k_fwd<128><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+      else k_fwd<256><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+    }
     cudaDeviceSynchronize();
     cudaEvent_t a, e; cudaEventCreate(&a); cudaEventCreate(&e);
     float best = 1e30f;
     for (int r = 0; r < 10; r++) {
       cudaEventRecord(a);
       if (D == 64) k_fwd<64><<<grid, 128, smem>>>(q, k, v, o, s, 1);
-      else k_fwd<128><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+      else if (D == 128) k_fwd<128><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+      else k_fwd<256><<<grid, 128, smem>>>(q, k, v, o, s, 1);
       cudaEventRecord(e); cudaEventSynchronize(e);
       float ms; cudaEventElapsedTime(&ms, a, e);
       if (ms < best) best = ms;
