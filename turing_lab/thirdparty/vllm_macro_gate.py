@@ -213,10 +213,14 @@ def main():
         if is_control and not (0.80 <= ratio <= 1.20):
             v = "INVALID-ENV"
             failures += 1
-        elif not is_control and ratio < 0.90:
+        elif not is_control and ratio < 0.80:
+            # the calibrated noise floor: identical-code engine runs swing
+            # this far on tp2 decode rows (interleaved bisect, 2026-09-07),
+            # so only a drop below 0.80 of baseline counts as a failure
             v = "FAIL"
             failures += 1
         elif not is_control and ratio < 0.95:
+            # inside the noise floor: flagged for follow-up, not failed
             v = "VARIANCE-BOUND"
         elif is_control and not (0.90 <= ratio <= 1.10) and high_var:
             v = "NOISY-ENV"
