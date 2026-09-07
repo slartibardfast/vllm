@@ -1,9 +1,9 @@
 diff --git a/csrc/flash_attn/bridge/bridge_shim.cu b/csrc/flash_attn/bridge/bridge_shim.cu
 new file mode 100644
-index 0000000..7bd3927
+index 0000000..49aea32
 --- /dev/null
 +++ b/csrc/flash_attn/bridge/bridge_shim.cu
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,89 @@
 +// bridge_shim.cu — route flash-attn's Turing dispatch at the bridge-native
 +// forward (plan/0006): sm_75 executes cu_sm80_on_sm75 primitives, not the
 +// dormant sub-80 CUTLASS path. Supported: fp16, d in {64,128,256}, sq/s
@@ -15,7 +15,7 @@ index 0000000..7bd3927
 +#include <cuda_fp16.h>
 +#include "../../../../../bridge/flash_fwd_sm75.cuh"
 +
-+template <int D>
++template <int D, bool kLd>
 +__global__ void bridge_fwd_kernel(const __half* __restrict__ q,
 +                                  const __half* __restrict__ k,
 +                                  const __half* __restrict__ v,
@@ -27,11 +27,11 @@ index 0000000..7bd3927
 +  int kvh = (bh % h_q) / (h_q / h_kv);
 +  long qoff = (long)bh * sq * D;
 +  long koff = ((long)(bh / h_q) * h_kv + kvh) * s * D;
-+  bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff, sq,
-+                                 s, q0, causal_flag != 0, softcap, smem);
++  bridge_flash::flash_fwd_one<D, kLd>(q + qoff, k + koff, v + koff, out + qoff,
++                                 sq, s, q0, causal_flag != 0, softcap, smem);
 +}
 +
-+template <int D>
++template <int D, bool kLd>
 +static void launch(const at::Half* q, const at::Half* k, const at::Half* v,
 +                   at::Half* out, int b, int h_q, int h_kv, int sq, int s,
 +                   int q0, bool causal, float softcap, cudaStream_t stream) {
@@ -39,9 +39,9 @@ index 0000000..7bd3927
 +  size_t smem = (D == 256)
 +      ? size_t(2) * 32 * kStride * 2  // no sQ; 32-row K+V
 +      : size_t((D <= 64 ? 5 : 3) * 64 * kStride) * 2;
-+  cudaFuncSetAttribute(bridge_fwd_kernel<D>,
++  cudaFuncSetAttribute(bridge_fwd_kernel<D, kLd>,
 +                       cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
-+  bridge_fwd_kernel<D><<<dim3(b * h_q, sq / 64), 128, smem, stream>>>(
++  bridge_fwd_kernel<D, kLd><<<dim3(b * h_q, sq / 64), 128, smem, stream>>>(
 +      reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
 +      reinterpret_cast<const __half*>(v), reinterpret_cast<__half*>(out), sq,
 +      s, q0, h_q, h_kv, causal ? 1 : 0, softcap);
@@ -61,18 +61,31 @@ index 0000000..7bd3927
 +  TORCH_CHECK(h_q % h_kv == 0, "bridge fwd: GQA ratio must divide");
 +  auto out = torch::empty_like(q);
 +  auto stream = at::cuda::getCurrentCUDAStream();
-+  if (d == 64)
-+    launch<64>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
-+               v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
-+               sq, s, (int)q0, causal, (float)softcap, stream);
-+  else if (d == 128)
-+    launch<128>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
-+                v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
-+                sq, s, (int)q0, causal, (float)softcap, stream);
-+  else
-+    launch<256>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
-+                v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
-+                sq, s, (int)q0, causal, (float)softcap, stream);
++  // decode-shaped calls (one padded q tile) instantiate the pre-tuning
++  // load path; larger sq gets ldmatrix. Compile-time split keeps each
++  // instantiation's register profile single-path.
++  if (d == 64) {
++    if (sq <= 64) launch<64, false>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++        v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++        sq, s, (int)q0, causal, (float)softcap, stream);
++    else launch<64, true>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++        v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++        sq, s, (int)q0, causal, (float)softcap, stream);
++  } else if (d == 128) {
++    if (sq <= 64) launch<128, false>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++        v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++        sq, s, (int)q0, causal, (float)softcap, stream);
++    else launch<128, true>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++        v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++        sq, s, (int)q0, causal, (float)softcap, stream);
++  } else {
++    if (sq <= 64) launch<256, false>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++        v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++        sq, s, (int)q0, causal, (float)softcap, stream);
++    else launch<256, true>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
++        v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
++        sq, s, (int)q0, causal, (float)softcap, stream);
++  }
 +  return out;
 +}
 +
