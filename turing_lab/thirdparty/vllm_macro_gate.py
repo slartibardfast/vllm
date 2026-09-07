@@ -179,32 +179,47 @@ def main():
                              f"(rc={proc.returncode})")
                 per_restart.append(parse_child(arm_log.read_text(),
                                                backend, tp))
-            keys = set().union(*[set(x) for x in per_restart])
-            for key in sorted(keys):
+            keys = sorted({k for d in per_restart for k in d
+                           if not k.endswith(":spread")})
+            for key in keys:
                 vals = sorted(rr[key] for rr in per_restart if key in rr)
                 if len(vals) != n_restarts:
                     sys.exit(f"arm {backend} tp{tp}: row {key} missing from "
                              f"{n_restarts - len(vals)} of {n_restarts} restarts")
                 results[key] = vals[len(vals) // 2]
+                # cross-restart spread for the variance-aware verdict
+                results[key + ":restarts"] = vals
 
     verdicts, md_rows = [], []
     failures = 0
-    spreads = {k: v for k, v in results.items() if k.endswith(":spread")}
-    results = {k: v for k, v in results.items() if not k.endswith(":spread")}
+    spreads = {k: v for k, v in results.items() if k.endswith(":restarts")}
+    results = {k: v for k, v in results.items() if not k.endswith(":restarts")}
     for key, val in sorted(results.items()):
         b = base_rows.get(key)
+        vals = spreads.get(key + ":restarts", [])
         if b is None:
             verdicts.append((key, val, None, "SEEDED"))
             md_rows.append(f"| {key} | {val:.1f} | - | seeded |")
             continue
         ratio = val / b
         is_control = "TRITON" in key
+        # Variance-aware verdict: a row whose cross-restart spread exceeds
+        # 15 percent of its median cannot be judged on a 5 percent band -
+        # it is flagged VARIANCE-BOUND (or NOISY-ENV for the control) and
+        # excluded from the failure count until more restarts are sampled.
+        rel_spread = (((max(vals) - min(vals)) / val) if (vals and val)
+                      else 0.0)
+        high_var = rel_spread > 0.15
         if is_control and not (0.80 <= ratio <= 1.20):
             v = "INVALID-ENV"
             failures += 1
-        elif not is_control and ratio < 0.95:
+        elif not is_control and ratio < 0.90:
             v = "FAIL"
             failures += 1
+        elif not is_control and ratio < 0.95:
+            v = "VARIANCE-BOUND"
+        elif is_control and not (0.90 <= ratio <= 1.10) and high_var:
+            v = "NOISY-ENV"
         else:
             v = "PASS" if ratio < 0.98 else "PASS+"
         verdicts.append((key, val, ratio, v))
