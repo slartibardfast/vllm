@@ -149,24 +149,43 @@ def main():
         else SEED_BASELINE
     base_rows = baseline["rows"]
 
-    results, child_texts = {}, {}
+    # Cross-restart sampling: tp2 bridge decode rows swing up to +-15
+    # percent between engine restarts of the same kernel (2026-09-06/07
+    # measurements), so each tp2 arm runs the full protocol under THREE
+    # separate engine restarts and the parent takes the per-row median
+    # across restarts. tp1 rows are stable run to run; one restart.
+    results = {}
     for tp, mode in ((1, "gpu0"), (2, "exclusive")):
+        n_restarts = 3 if tp == 2 else 1
         for backend in ("BRIDGE_ATTN", "TRITON_ATTN"):
-            cmd = [str(LEASE), "--mode", mode, "--wait", "1800", "--",
-                   sys.executable, __file__, "--arm", backend, str(tp)]
-            env_pass = {"CUDA_HOME": "/opt/cuda",
-                        "FLASHINFER_DISABLE_VERSION_CHECK": "1",
-                        "PATH": "/opt/cuda/bin:" + __import__("os").environ["PATH"]}
-            print(f"=== arm {backend} tp{tp} (lease {mode}) ===", flush=True)
-            arm_log = HERE / f"macro-gate-arm-{backend}-tp{tp}.log"
-            with open(arm_log, "w") as af:
-                proc = subprocess.run(cmd, stdout=af, stderr=subprocess.STDOUT,
-                                      env={**__import__("os").environ, **env_pass})
-            child_texts[f"{backend}-tp{tp}"] = arm_log.read_text()[-4000:]
-            results.update(parse_child(arm_log.read_text(), backend, tp))
-            if proc.returncode != 0:
-                print(open(arm_log).read()[-2000:])
-                sys.exit(f"arm {backend} tp{tp} failed (rc={proc.returncode})")
+            per_restart = []
+            for r in range(n_restarts):
+                cmd = [str(LEASE), "--mode", mode, "--wait", "1800", "--",
+                       sys.executable, __file__, "--arm", backend, str(tp)]
+                env_pass = {"CUDA_HOME": "/opt/cuda",
+                            "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+                            "PATH": "/opt/cuda/bin:" + __import__("os").environ["PATH"]}
+                print(f"=== arm {backend} tp{tp} restart {r + 1}/{n_restarts} "
+                      f"(lease {mode}) ===", flush=True)
+                arm_log = HERE / f"macro-gate-arm-{backend}-tp{tp}.log"
+                with open(arm_log, "w") as af:
+                    proc = subprocess.run(cmd, stdout=af,
+                                          stderr=subprocess.STDOUT,
+                                          env={**__import__("os").environ,
+                                               **env_pass})
+                if proc.returncode != 0:
+                    print(open(arm_log).read()[-2000:])
+                    sys.exit(f"arm {backend} tp{tp} failed "
+                             f"(rc={proc.returncode})")
+                per_restart.append(parse_child(arm_log.read_text(),
+                                               backend, tp))
+            keys = set().union(*[set(x) for x in per_restart])
+            for key in sorted(keys):
+                vals = sorted(rr[key] for rr in per_restart if key in rr)
+                if len(vals) != n_restarts:
+                    sys.exit(f"arm {backend} tp{tp}: row {key} missing from "
+                             f"{n_restarts - len(vals)} of {n_restarts} restarts")
+                results[key] = vals[len(vals) // 2]
 
     verdicts, md_rows = [], []
     failures = 0
