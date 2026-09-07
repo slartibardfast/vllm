@@ -111,6 +111,10 @@ __device__ __forceinline__ void flash_fwd_one(
   const float scale_log2e = (1.f / sqrtf((float)D)) * kLog2e;
 
   const int n_tiles = s / kBlockKVD;
+  // decode-shaped calls (one 64-row q tile, mostly padding) measure
+  // faster with the pre-tuning smem loads under TP2 lockstep; ldmatrix
+  // pays off on prefill-shaped tiles. Chosen per call from sq.
+  const bool kUseLd = (sq > kBlockRows);
   // causal compares kv columns against ABSOLUTE query positions; the
   // output row index stays tile-relative (the chunk's own rows)
   const int q_abs_lo = q0 + (int)q_base + row_lo;
@@ -183,6 +187,7 @@ __device__ __forceinline__ void flash_fwd_one(
       for (int r4 = 0; r4 < 4; r4++) st[nt8][r4] = 0.f;
 
     uint32_t kb[kNt8 / 4][4];
+    const int kbuf = (kDBuf ? (nt & 1) * kBlockKVD * kStride : 0);
 #pragma unroll
     for (int ks = 0; ks < D / 8; ks++) {
       // K B-fragments via ldmatrix: kNt8/4 x4 loads cover all kNt8 n
@@ -190,13 +195,20 @@ __device__ __forceinline__ void flash_fwd_one(
       // (4*G+M)*8..+7 over d = ks*8..+8; the x4 output distribution
       // (row = l/4, colpair = l%4) is exactly {K[n][ks*8+2t], +1},
       // n = nt8*8 + g.
+      if (kUseLd) {
 #pragma unroll
-      for (int grp = 0; grp < kNt8 / 4; grp++) {
-        const __half* arow =
-            sK + (kDBuf ? (nt & 1) * kBlockKVD * kStride : 0) +
-            ((4 * grp + (lane >> 3)) * 8 + (lane & 7)) * kStride + ks * 8;
-        bridge::ldmatrix_x4(kb[grp][0], kb[grp][1], kb[grp][2], kb[grp][3],
-                            arow);
+        for (int grp = 0; grp < kNt8 / 4; grp++) {
+          const __half* arow =
+              sK + kbuf +
+              ((4 * grp + (lane >> 3)) * 8 + (lane & 7)) * kStride + ks * 8;
+          bridge::ldmatrix_x4(kb[grp][0], kb[grp][1], kb[grp][2], kb[grp][3],
+                              arow);
+        }
+      } else {
+#pragma unroll
+        for (int nt8 = 0; nt8 < kNt8; nt8++)
+          kb[nt8 >> 2][nt8 & 3] = *reinterpret_cast<const uint32_t*>(
+              &sK[kbuf + (nt8 * 8 + g) * kStride + ks * 8 + 2 * t]);
       }
 #pragma unroll
       for (int nt8 = 0; nt8 < kNt8; nt8++)
@@ -303,17 +315,34 @@ __device__ __forceinline__ void flash_fwd_one(
       // hands lane l {V[ks*8+2t][(4*ccg+M)*8 + g], +1} — exactly
       // {V[k][n], V[k+1][n]} with k = ks*8+2t, n = cc*8+g.
       uint32_t vb[4];
+      const int vbuf = (kDBuf ? (nt & 1) * kBlockKVD * kStride : 0);
+      if (kUseLd) {
+        // ldmatrix.trans: matrix M of group ccg carries V rows ks*8..+7
+        // over d = (4*ccg+M)*8..+8; lane l gets {V[ks*8+2t][(4*ccg+M)*8+g], +1}
 #pragma unroll
-      for (int ccg = 0; ccg < D / 32; ccg++) {
-        const __half* vrow =
-            sV + (kDBuf ? (nt & 1) * kBlockKVD * kStride : 0) +
-            (ks * 8 + (lane & 7)) * kStride + (4 * ccg + (lane >> 3)) * 8;
-        bridge::ldmatrix_x4_trans(vb[0], vb[1], vb[2], vb[3], vrow);
+        for (int ccg = 0; ccg < D / 32; ccg++) {
+          const __half* vrow =
+              sV + vbuf + (ks * 8 + (lane & 7)) * kStride +
+              (4 * ccg + (lane >> 3)) * 8;
+          bridge::ldmatrix_x4_trans(vb[0], vb[1], vb[2], vb[3], vrow);
 #pragma unroll
-        for (int M = 0; M < 4; M++)
-          bridge::mma_m16n8k8_f32(acc[4 * ccg + M][0], acc[4 * ccg + M][1],
-                                  acc[4 * ccg + M][2], acc[4 * ccg + M][3],
-                                  pfa[ks][0], pfa[ks][1], vb[M]);
+          for (int M = 0; M < 4; M++)
+            bridge::mma_m16n8k8_f32(acc[4 * ccg + M][0], acc[4 * ccg + M][1],
+                                    acc[4 * ccg + M][2], acc[4 * ccg + M][3],
+                                    pfa[ks][0], pfa[ks][1], vb[M]);
+        }
+      } else {
+        // pre-tuning loads: two column-strided u16 reads per B-fragment
+#pragma unroll
+        for (int cc = 0; cc < D / 8; cc++) {
+          uint16_t vlo = *(const uint16_t*)&sV[vbuf +
+              (ks * 8 + 2 * t) * kStride + cc * 8 + g];
+          uint16_t vhi = *(const uint16_t*)&sV[vbuf +
+              (ks * 8 + 2 * t + 1) * kStride + cc * 8 + g];
+          uint32_t b = (uint32_t)vlo | ((uint32_t)vhi << 16);
+          bridge::mma_m16n8k8_f32(acc[cc][0], acc[cc][1], acc[cc][2],
+                                  acc[cc][3], pfa[ks][0], pfa[ks][1], b);
+        }
       }
     }
 
