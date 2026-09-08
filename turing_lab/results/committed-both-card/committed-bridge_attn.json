@@ -1,0 +1,90 @@
+{
+ "started": "2026-09-08T22:45:04",
+ "model": "/opt/models/Intel-Qwen3.6-27B-int4-AutoRound",
+ "backend": "BRIDGE_ATTN",
+ "protocol": "fresh engine per restart; median-of-5 reps in-process; clocks locked 1455; assertions parsed from engine logs",
+ "floor_hypothesis_tps_nomtp": 55.4,
+ "restarts": [
+  {
+   "restart": 1,
+   "exit": 0,
+   "wall_s": 240.3,
+   "assertions": {
+    "backend": "BRIDGE_ATTN",
+    "kv_tokens": "191,146",
+    "preempted_events": 0
+   },
+   "rows": {
+    "short_decode": 27.5,
+    "ctx512_decode": 11.1,
+    "ctx2048_decode": 11.4
+   }
+  },
+  {
+   "restart": 2,
+   "exit": 0,
+   "wall_s": 236.9,
+   "assertions": {
+    "backend": "BRIDGE_ATTN",
+    "kv_tokens": "191,146",
+    "preempted_events": 0
+   },
+   "rows": {
+    "short_decode": 27.6,
+    "ctx512_decode": 11.0,
+    "ctx2048_decode": 10.7
+   }
+  },
+  {
+   "restart": 3,
+   "exit": 0,
+   "wall_s": 235.5,
+   "assertions": {
+    "backend": "BRIDGE_ATTN",
+    "kv_tokens": "191,146",
+    "preempted_events": 0
+   },
+   "rows": {
+    "short_decode": 28.2,
+    "ctx512_decode": 11.4,
+    "ctx2048_decode": 11.1
+   }
+  }
+ ],
+ "verdict": {
+  "short_decode": {
+   "median": 27.6,
+   "band_pct": 2.5,
+   "vals": [
+    27.5,
+    27.6,
+    28.2
+   ]
+  },
+  "ctx512_decode": {
+   "median": 11.1,
+   "band_pct": 3.6,
+   "vals": [
+    11.0,
+    11.1,
+    11.4
+   ]
+  },
+  "ctx2048_decode": {
+   "median": 11.1,
+   "band_pct": 6.3,
+   "vals": [
+    10.7,
+    11.1,
+    11.4
+   ]
+  }
+ },
+ "labels": {
+  "engaged_backend(s)": [
+   "BRIDGE_ATTN"
+  ],
+  "preempted_events_total": 0
+ },
+ "floor_ratio_ctx512": 0.2
+}
