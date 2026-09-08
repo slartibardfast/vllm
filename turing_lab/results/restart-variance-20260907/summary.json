@@ -1,19 +1,20 @@
 {
- "started": "2026-09-07T23:35:16",
+ "started": "2026-09-08T21:55:56",
+ "model": "/opt/models/Qwen3.5-4B-W4A16-AR-f16/Qwen3.5-4B-w4g128",
  "protocol": "fresh engine per restart; median-of-5 reps in-process (gate harness); clocks 1455; NCCL_DEBUG=INFO SUBSYS=INIT,TUNING",
  "restarts": [
   {
    "tag": "BRIDGE_ATTN_r1",
    "backend": "BRIDGE_ATTN",
    "restart": 1,
-   "exit": 1,
-   "wall_s": 340.0,
+   "exit": 0,
+   "wall_s": 147.7,
    "rows": {
-    "short_decode": null,
-    "ctx512_decode": null,
-    "ctx2048_decode": null,
-    "ctx512_mixed": null,
-    "ctx2048_mixed": null
+    "short_decode": 58.8,
+    "ctx512_decode": 20.8,
+    "ctx2048_decode": 21.0,
+    "ctx512_mixed": 19.2,
+    "ctx2048_mixed": 16.6
    },
    "nccl": {
     "nccl_lines": [
@@ -23,7 +24,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |               (Worker pid=220383) WARNING 09",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |             (Worker pid=249606) WARNING 09-0",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -47,14 +48,14 @@
    "tag": "BRIDGE_ATTN_r2",
    "backend": "BRIDGE_ATTN",
    "restart": 2,
-   "exit": 1,
-   "wall_s": 65.0,
+   "exit": 0,
+   "wall_s": 145.6,
    "rows": {
-    "short_decode": null,
-    "ctx512_decode": null,
-    "ctx2048_decode": null,
-    "ctx512_mixed": null,
-    "ctx2048_mixed": null
+    "short_decode": 57.6,
+    "ctx512_decode": 22.3,
+    "ctx2048_decode": 20.2,
+    "ctx512_mixed": 21.3,
+    "ctx2048_mixed": 16.6
    },
    "nccl": {
     "nccl_lines": [
@@ -64,7 +65,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=221096) WARNING 09-",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=250095) WARNING 09-",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -88,14 +89,14 @@
    "tag": "BRIDGE_ATTN_r3",
    "backend": "BRIDGE_ATTN",
    "restart": 3,
-   "exit": 1,
-   "wall_s": 64.8,
+   "exit": 0,
+   "wall_s": 150.1,
    "rows": {
-    "short_decode": null,
-    "ctx512_decode": null,
-    "ctx2048_decode": null,
-    "ctx512_mixed": null,
-    "ctx2048_mixed": null
+    "short_decode": 53.3,
+    "ctx512_decode": 22.3,
+    "ctx2048_decode": 20.6,
+    "ctx512_mixed": 20.1,
+    "ctx2048_mixed": 16.7
    },
    "nccl": {
     "nccl_lines": [
@@ -105,7 +106,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |               (Worker pid=221517) WARNING 09",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |             (Worker pid=250583) WARNING 09-0",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -129,14 +130,14 @@
    "tag": "BRIDGE_ATTN_r4",
    "backend": "BRIDGE_ATTN",
    "restart": 4,
-   "exit": 1,
-   "wall_s": 64.7,
+   "exit": 0,
+   "wall_s": 147.5,
    "rows": {
-    "short_decode": null,
-    "ctx512_decode": null,
-    "ctx2048_decode": null,
-    "ctx512_mixed": null,
-    "ctx2048_mixed": null
+    "short_decode": 55.6,
+    "ctx512_decode": 21.0,
+    "ctx2048_decode": 21.2,
+    "ctx512_mixed": 20.2,
+    "ctx2048_mixed": 17.2
    },
    "nccl": {
     "nccl_lines": [
@@ -146,7 +147,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=221939) WARNING 09-",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |             (Worker pid=251069) WARNING 09-0",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -170,14 +171,14 @@
    "tag": "BRIDGE_ATTN_r5",
    "backend": "BRIDGE_ATTN",
    "restart": 5,
-   "exit": 1,
-   "wall_s": 64.6,
+   "exit": 0,
+   "wall_s": 148.3,
    "rows": {
-    "short_decode": null,
-    "ctx512_decode": null,
-    "ctx2048_decode": null,
-    "ctx512_mixed": null,
-    "ctx2048_mixed": null
+    "short_decode": 58.4,
+    "ctx512_decode": 17.6,
+    "ctx2048_decode": 16.4,
+    "ctx512_mixed": 17.0,
+    "ctx2048_mixed": 14.0
    },
    "nccl": {
     "nccl_lines": [
@@ -187,7 +188,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=222357) WARNING 09-",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=251781) WARNING 09-",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -211,14 +212,14 @@
    "tag": "BRIDGE_ATTN_r6",
    "backend": "BRIDGE_ATTN",
    "restart": 6,
-   "exit": 1,
-   "wall_s": 64.9,
+   "exit": 0,
+   "wall_s": 155.0,
    "rows": {
-    "short_decode": null,
-    "ctx512_decode": null,
-    "ctx2048_decode": null,
-    "ctx512_mixed": null,
-    "ctx2048_mixed": null
+    "short_decode": 54.1,
+    "ctx512_decode": 21.3,
+    "ctx2048_decode": 21.4,
+    "ctx512_mixed": 20.3,
+    "ctx2048_mixed": 16.8
    },
    "nccl": {
     "nccl_lines": [
@@ -228,7 +229,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=222777) WARNING 09-",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=252271) WARNING 09-",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -253,13 +254,13 @@
    "backend": "TRITON_ATTN",
    "restart": 1,
    "exit": 0,
-   "wall_s": 124.2,
+   "wall_s": 116.3,
    "rows": {
-    "short_decode": 173.0,
-    "ctx512_decode": 24.3,
-    "ctx2048_decode": 24.3,
-    "ctx512_mixed": 22.9,
-    "ctx2048_mixed": 18.0
+    "short_decode": 168.4,
+    "ctx512_decode": 23.6,
+    "ctx2048_decode": 22.6,
+    "ctx512_mixed": 22.3,
+    "ctx2048_mixed": 16.9
    },
    "nccl": {
     "nccl_lines": [
@@ -269,7 +270,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=223198) WARNING 09-",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |             (Worker pid=252878) WARNING 09-0",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
@@ -294,13 +295,13 @@
    "backend": "TRITON_ATTN",
    "restart": 2,
    "exit": 0,
-   "wall_s": 112.8,
+   "wall_s": 118.8,
    "rows": {
-    "short_decode": 177.7,
-    "ctx512_decode": 24.6,
-    "ctx2048_decode": 24.5,
-    "ctx512_mixed": 23.1,
-    "ctx2048_mixed": 18.0
+    "short_decode": 165.6,
+    "ctx512_decode": 23.2,
+    "ctx2048_decode": 23.3,
+    "ctx512_mixed": 22.0,
+    "ctx2048_mixed": 17.4
    },
    "nccl": {
     "nccl_lines": [
@@ -310,7 +311,7 @@
      "Trees [0] 1/-1/-1->0->-1 [1] -1/-1/-1->0->1 [2] 1/-1/-1->0->-1 [3] -1/-1/-1->0->1",
      "Algorithm   |                            Tree                  |                            Ring                  |                   CollNetDirect             ",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
-     "Algorithm   |                    CollNetChain                  |                            NVLS                  |             (Worker pid=223691) WARNING 09-0",
+     "Algorithm   |                    CollNetChain                  |                            NVLS                  |              (Worker pid=253455) WARNING 09-",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",
      "Algorithm   |                             PAT                  |",
      "Protocol    |             LL |          LL128 |         Simple |             LL |          LL128 |         Simple |             LL |          LL128 |         Si",

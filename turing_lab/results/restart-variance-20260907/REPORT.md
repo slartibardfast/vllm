@@ -68,3 +68,18 @@ control on both sides.
 - Commit the lane kernel edits + this record (the durable fix).
 - The 27B variance verdict remains the acceptance question; the 4B
   bridge rows inform whether the swing reproduces on the hybrid at all.
+
+## Probe verdict (2026-09-08, 4B fixture, complete)
+
+All 8 restarts clean (the CUDA_HOME fix held). BRIDGE n=6: ctx512_decode
+median 21.3 band 22.1 percent (low restart 17.6); ctx2048 median 21.0
+band 23.8 percent; short_decode median 57.6 band 9.5 percent. TRITON
+n=2: bands 1.7-3.0 percent (consistent with the earlier 0.8-1.2). The
+restart swing REPRODUCES on the bridge arm of the same-dimension
+hybrid and does NOT reproduce on TRITON under identical engine, model,
+and clocks. Verdict: the variance is bridge-path-specific, not a
+general TP2 engine property. With the bisect having exonerated the
+kernel in isolation, the remaining suspect class is the bridge arm's
+engine interaction (per-request python gather loop in bridge_attn.py,
+the JIT-built extension, per-request contiguity copies) - the nsys
+instrument is now pointed at the right arm.
