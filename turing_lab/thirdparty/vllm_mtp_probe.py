@@ -43,6 +43,9 @@ model, out_path, use_mtp = sys.argv[1], sys.argv[2], sys.argv[3] == "mtp"
 kw = dict(model=model, dtype="float16", tensor_parallel_size=2,
           gpu_memory_utilization=0.90, max_model_len=4096,
           enforce_eager=True, enable_prefix_caching=False)
+import os as _o
+if _o.environ.get("COMMITTED_NO_EAGER") == "1":
+    kw["enforce_eager"] = False
 if use_mtp:
     kw["speculative_config"] = {"method": "mtp", "num_speculative_tokens": 3}
 llm = LLM(**kw)
