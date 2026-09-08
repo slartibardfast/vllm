@@ -25,7 +25,11 @@ VENV_PY = os.path.abspath(
     os.path.join(HERE, "..", "..", ".venv", "bin", "python"))
 GATE = os.path.join(HERE, "vllm_macro_gate.py")
 MODEL = "/opt/models/Intel-Qwen3.6-27B-int4-AutoRound"
-OUTDIR = os.path.join(HERE, "..", "results", "committed-both-card")
+OUTDIR = os.path.join(HERE, "..", "results",
+                       "committed-both-card-noneager")
+if os.environ.get("COMMITTED_NO_EAGER") != "1":
+    OUTDIR = os.path.join(HERE, "..", "results",
+                           "committed-both-card")
 CHECKPOINT_GIB = 18.0   # du, 2026-09-08; per card = 9.0 under TP2
 MEASURED_GB_S = 535.0   # TU102 paper, pure-read protocol
 
@@ -77,6 +81,9 @@ def main():
         env["NCCL_DEBUG_SUBSYS"] = "INIT,TUNING"
         env["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
         env["CUDA_HOME"] = "/opt/cuda"
+        import os as _o
+        if _o.environ.get("COMMITTED_NO_EAGER") == "1":
+            env["COMMITTED_NO_EAGER"] = "1"
         t0 = time.time()
         with open(log_path, "w") as log:
             child = subprocess.Popen(

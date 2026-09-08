@@ -96,6 +96,11 @@ def run_arm(backend, tp, model=None):
               gpu_memory_utilization=0.90, max_model_len=4096,
               enforce_eager=True, attention_backend=backend,
               enable_prefix_caching=False)
+    # committed-run companion arm: CUDA graphs on (the recorded committed
+    # number's named next rung); default unchanged (eager)
+    import os as _os
+    if _os.environ.get("COMMITTED_NO_EAGER") == "1":
+        kw["enforce_eager"] = False
     llm = LLM(**kw)
     llm.generate(["warmup"], SamplingParams(max_tokens=8, temperature=0.0,
                                             ignore_eos=True))
