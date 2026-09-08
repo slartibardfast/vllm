@@ -36,6 +36,34 @@ ROWS = ("short_decode", "ctx512_decode", "ctx2048_decode",
 ARMS = ([("BRIDGE_ATTN", i) for i in range(1, 7)] +
         [("TRITON_ATTN", i) for i in range(1, 3)])
 
+# abort after this many consecutive failed restarts: an environment
+# error must burn one restart, not the whole batch (the 2026-09-07/08
+# window paid three times for the absence of this gate)
+ABORT_AFTER_CONSEC_FAILS = 2
+
+
+def parse_args():
+    args = sys.argv[1:]
+    out = {"model": MODEL, "outdir": OUTDIR, "bridge": 6, "control": 2}
+    i = 0
+    while i < len(args):
+        if args[i] == "--model":
+            out["model"] = args[i + 1]
+            i += 2
+        elif args[i] == "--outdir":
+            out["outdir"] = args[i + 1]
+            i += 2
+        elif args[i] == "--bridge":
+            out["bridge"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--control":
+            out["control"] = int(args[i + 1])
+            i += 2
+        else:
+            print(f"unknown arg {args[i]}", file=sys.stderr)
+            sys.exit(2)
+    return out
+
 
 def parse_rows(text):
     rows = {}
@@ -63,13 +91,25 @@ def parse_nccl(text):
 
 
 def main():
+    cfg = parse_args()
+    global ARMS, OUTDIR
+    OUTDIR = cfg["outdir"]
+    ARMS = ([("BRIDGE_ATTN", i) for i in range(1, cfg["bridge"] + 1)] +
+            [("TRITON_ATTN", i) for i in range(1, cfg["control"] + 1)])
     os.makedirs(OUTDIR, exist_ok=True)
     summary = {"started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+               "model": cfg["model"],
                "protocol": "fresh engine per restart; median-of-5 reps "
                            "in-process (gate harness); clocks 1455; "
                            "NCCL_DEBUG=INFO SUBSYS=INIT,TUNING",
                "restarts": []}
+    consec_fails = 0
     for backend, i in ARMS:
+        if consec_fails >= ABORT_AFTER_CONSEC_FAILS:
+            print(f"ABORT: {consec_fails} consecutive failed restarts - "
+                  f"environment error, not variance; fix and rerun",
+                  flush=True)
+            break
         tag = f"{backend}_r{i}"
         log_path = os.path.join(OUTDIR, f"{tag}.log")
         env = dict(os.environ)
@@ -87,7 +127,7 @@ def main():
         t0 = time.time()
         with open(log_path, "w") as log:
             child = subprocess.Popen(
-                [VENV_PY, GATE, "--arm", backend, "2", MODEL],
+                [VENV_PY, GATE, "--arm", backend, "2", cfg["model"]],
                 stdout=log, stderr=subprocess.STDOUT, env=env, cwd=HERE)
             child.wait()
         dt = time.time() - t0
@@ -98,6 +138,10 @@ def main():
                  "rows": {r: rows.get(r) for r in ROWS},
                  "nccl": parse_nccl(text)}
         summary["restarts"].append(entry)
+        if child.returncode == 0:
+            consec_fails = 0
+        else:
+            consec_fails += 1
         got = {r: rows.get(r) for r in ("ctx512_decode", "ctx2048_decode")}
         print(f"[{tag}] exit={child.returncode} wall={dt:.0f}s {got}",
               flush=True)

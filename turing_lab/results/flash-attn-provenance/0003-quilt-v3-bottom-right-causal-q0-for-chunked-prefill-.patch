@@ -1,0 +1,238 @@
+From e0ed326e2d9bc3202d31979a05a313518956fd06 Mon Sep 17 00:00:00 2001
+From: dconnolly <slartibardfast@users.noreply.github.com>
+Date: Sat, 5 Sep 2026 02:21:04 +0100
+Subject: [PATCH 3/7] quilt v3: bottom-right causal q0 for chunked prefill,
+ causal zero-padding to 64, decode shape
+
+---
+ csrc/flash_attn/bridge/bridge_shim.cu     | 39 ++++++++++++-----------
+ csrc/flash_attn/bridge/flash_fwd_sm75.cuh | 34 ++++++++++++--------
+ flash_attn/flash_attn_interface.py        | 27 +++++++++++++---
+ 3 files changed, 63 insertions(+), 37 deletions(-)
+
+diff --git a/csrc/flash_attn/bridge/bridge_shim.cu b/csrc/flash_attn/bridge/bridge_shim.cu
+index 14abcff..83c0647 100644
+--- a/csrc/flash_attn/bridge/bridge_shim.cu
++++ b/csrc/flash_attn/bridge/bridge_shim.cu
+@@ -1,7 +1,9 @@
+ // bridge_shim.cu — route flash-attn's Turing dispatch at the bridge-native
+ // forward (plan/0006): sm_75 executes cu_sm80_on_sm75 primitives, not the
+-// dormant sub-80 CUTLASS path. Supported: fp16, d in {64,128}, s % 64 == 0,
+-// causal or full, GQA any ratio, contiguous (b, s, h, d).
++// dormant sub-80 CUTLASS path. Supported: fp16, d in {64,128}, sq/s
++// multiples of 64, causal or full, GQA any ratio, bottom-right causal via
++// q0 (absolute position of query row 0; the FA2 seqlen_q != seqlen_k
++// contract), contiguous (b, h, s, d).
+ #include <torch/extension.h>
+ #include <ATen/cuda/CUDAContext.h>
+ #include <cuda_fp16.h>
+@@ -11,38 +13,39 @@ template <int D>
+ __global__ void bridge_fwd_kernel(const __half* __restrict__ q,
+                                   const __half* __restrict__ k,
+                                   const __half* __restrict__ v,
+-                                  __half* __restrict__ out, int s, int h_q,
+-                                  int h_kv, int causal_flag) {
++                                  __half* __restrict__ out, int sq, int s,
++                                  int q0, int h_q, int h_kv, int causal_flag) {
+   extern __shared__ __half smem[];
+   int bh = blockIdx.x;
+   int kvh = (bh % h_q) / (h_q / h_kv);
+-  long qoff = (long)bh * s * D;
++  long qoff = (long)bh * sq * D;
+   long koff = ((long)(bh / h_q) * h_kv + kvh) * s * D;
+-  bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff,
+-                                 s, causal_flag != 0, smem);
++  bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff, sq,
++                                 s, q0, causal_flag != 0, smem);
+ }
+ 
+ template <int D>
+ static void launch(const at::Half* q, const at::Half* k, const at::Half* v,
+-                   at::Half* out, int b, int h_q, int h_kv, int s,
+-                   bool causal, cudaStream_t stream) {
++                   at::Half* out, int b, int h_q, int h_kv, int sq, int s,
++                   int q0, bool causal, cudaStream_t stream) {
+   constexpr int kStride = D + 8;
+   size_t smem = (size_t)(D <= 64 ? 5 : 3) * 64 * kStride * 2;
+   cudaFuncSetAttribute(bridge_fwd_kernel<D>,
+                        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+-  bridge_fwd_kernel<D><<<dim3(b * h_q, s / 64), 128, smem, stream>>>(
++  bridge_fwd_kernel<D><<<dim3(b * h_q, sq / 64), 128, smem, stream>>>(
+       reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
+-      reinterpret_cast<const __half*>(v), reinterpret_cast<__half*>(out), s,
+-      h_q, h_kv, causal ? 1 : 0);
++      reinterpret_cast<const __half*>(v), reinterpret_cast<__half*>(out), sq,
++      s, q0, h_q, h_kv, causal ? 1 : 0);
+ }
+ 
+ torch::Tensor bridge_fwd_sm75(torch::Tensor q, torch::Tensor k,
+-                              torch::Tensor v, bool causal) {
++                              torch::Tensor v, bool causal, int64_t q0) {
+   // (b, h, s, d)-contiguous input (the interface permutes FA2's
+-  // (b, s, h, d) before calling)
+-  const int b = q.size(0), h_q = q.size(1), s = q.size(2), d = q.size(3);
+-  const int h_kv = k.size(1);
++  // (b, s, h, d) before calling); sq = q rows, s = kv rows
++  const int b = q.size(0), h_q = q.size(1), sq = q.size(2), d = q.size(3);
++  const int h_kv = k.size(1), s = k.size(2);
+   TORCH_CHECK(d == 64 || d == 128, "bridge fwd: d must be 64 or 128");
++  TORCH_CHECK(sq % 64 == 0, "bridge fwd: sq must be a multiple of 64");
+   TORCH_CHECK(s % 64 == 0, "bridge fwd: s must be a multiple of 64");
+   TORCH_CHECK(h_q % h_kv == 0, "bridge fwd: GQA ratio must divide");
+   auto out = torch::empty_like(q);
+@@ -50,11 +53,11 @@ torch::Tensor bridge_fwd_sm75(torch::Tensor q, torch::Tensor k,
+   if (d == 64)
+     launch<64>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
+                v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
+-               s, causal, stream);
++               sq, s, (int)q0, causal, stream);
+   else
+     launch<128>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
+                 v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
+-                s, causal, stream);
++                sq, s, (int)q0, causal, stream);
+   return out;
+ }
+ 
+diff --git a/csrc/flash_attn/bridge/flash_fwd_sm75.cuh b/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
+index d797ec7..bcdf098 100644
+--- a/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
++++ b/csrc/flash_attn/bridge/flash_fwd_sm75.cuh
+@@ -32,13 +32,16 @@ __device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
+          ((uint32_t)__half_as_ushort(__float2half(hi)) << 16);
+ }
+ 
+-// The forward for one (b, h): q/k/v point at the (s, d) head matrix.
++// The forward for one (b, h): q points at the (sq, d) query block, k/v at
++// the (s, d) KV matrix. Query row 0 sits at absolute position q0
++// (bottom-right causal, the FA2 seqlen_q != seqlen_k contract: q0 = s - sq
++// for a prefill chunk with prefix; q0 = 0 and sq = s for the dense case).
+ // D in {64, 128}; d=64 double-buffers K/V, d=128 single-buffers (smem).
+ template <int D>
+ __device__ __forceinline__ void flash_fwd_one(
+     const __half* __restrict__ q, const __half* __restrict__ k,
+-    const __half* __restrict__ v, __half* __restrict__ out, int s,
+-    bool causal, void* smem) {
++    const __half* __restrict__ v, __half* __restrict__ out, int sq, int s,
++    int q0, bool causal, void* smem) {
+   constexpr int kStride = D + 8;
+   constexpr bool kDBuf = (D <= 64);
+   __half* sQ = reinterpret_cast<__half*>(smem);        // 64 x kStride
+@@ -56,11 +59,11 @@ __device__ __forceinline__ void flash_fwd_one(
+   const int row_hi = row_lo + 8;
+   const long q_base = (long)blockIdx.y * kBlockRows;
+ 
+-  // ---- stage Q (fp16 rows, zero-padded past s): 2048 u32 total ----
++  // ---- stage Q (fp16 rows, zero-padded past sq): 2048 u32 total ----
+   for (int i = tid; i < kBlockRows * (D / 2); i += kThreads) {
+     int r = i / (D / 2), c = (i % (D / 2)) * 2;
+     __half* dst = sQ + r * kStride + c;
+-    if (q_base + r < s) {
++    if (q_base + r < sq) {
+       const __half* p = q + (long)(q_base + r) * D + c;
+       bridge::sts_u32(dst, bridge::ldg_cs_u32(p));
+     } else {
+@@ -86,7 +89,9 @@ __device__ __forceinline__ void flash_fwd_one(
+   const float scale_log2e = (1.f / sqrtf((float)D)) * kLog2e;
+ 
+   const int n_tiles = s / kBlockKV;
+-  const int q_abs_lo = (int)q_base + row_lo;
++  // causal compares kv columns against ABSOLUTE query positions; the
++  // output row index stays tile-relative (the chunk's own rows)
++  const int q_abs_lo = q0 + (int)q_base + row_lo;
+   const int q_abs_hi = q_abs_lo + 8;
+ 
+   // per-thread staging registers for one K/V tile pair:
+@@ -125,7 +130,6 @@ __device__ __forceinline__ void flash_fwd_one(
+   };
+   if (kDBuf) load_kv_regs(0);
+   for (int nt = 0; nt < n_tiles; nt++) {
+-    const long k_base = (long)nt * kBlockKV;
+     if (kDBuf) {
+       store_kv_smem(nt & 1);
+       __syncthreads();
+@@ -268,19 +272,21 @@ __device__ __forceinline__ void flash_fwd_one(
+     __syncthreads();
+   }
+ 
+-  // ---- epilogue: O / l, write rows < s ----
++  // ---- epilogue: O / l, write rows < sq (tile-relative indices) ----
++  const int out_lo = (int)q_base + row_lo;
++  const int out_hi = out_lo + 8;
+ #pragma unroll
+   for (int nt8 = 0; nt8 < D / 8; nt8++) {
+-    if (q_abs_lo < s) {
+-      out[(long)q_abs_lo * D + nt8 * 8 + 2 * t] =
++    if (out_lo < sq) {
++      out[(long)out_lo * D + nt8 * 8 + 2 * t] =
+           __float2half(acc[nt8][0] / l_lo);
+-      out[(long)q_abs_lo * D + nt8 * 8 + 2 * t + 1] =
++      out[(long)out_lo * D + nt8 * 8 + 2 * t + 1] =
+           __float2half(acc[nt8][1] / l_lo);
+     }
+-    if (q_abs_hi < s) {
+-      out[(long)q_abs_hi * D + nt8 * 8 + 2 * t] =
++    if (out_hi < sq) {
++      out[(long)out_hi * D + nt8 * 8 + 2 * t] =
+           __float2half(acc[nt8][2] / l_hi);
+-      out[(long)q_abs_hi * D + nt8 * 8 + 2 * t + 1] =
++      out[(long)out_hi * D + nt8 * 8 + 2 * t + 1] =
+           __float2half(acc[nt8][3] / l_hi);
+     }
+   }
+diff --git a/flash_attn/flash_attn_interface.py b/flash_attn/flash_attn_interface.py
+index dd91be2..108dabe 100644
+--- a/flash_attn/flash_attn_interface.py
++++ b/flash_attn/flash_attn_interface.py
+@@ -89,10 +89,15 @@ def _flash_attn_forward(
+ ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+     # plan/0006: Turing executes the bridge-native forward
+-    # (cu_sm80_on_sm75 primitives), not the dormant sub-80 CUTLASS path
++    # (cu_sm80_on_sm75 primitives), not the dormant sub-80 CUTLASS path.
++    # seqlen_q != seqlen_k is the FA2 bottom-right causal contract
++    # (prefill chunk with prefix; the vLLM bridge backend rides it);
++    # causal lengths are zero-padded to 64 (the causal mask excludes
++    # padded KV columns, padded Q rows are sliced off).
+     if (q.is_cuda and torch.cuda.get_device_capability(q.device.index) == (7, 5)
+             and q.dtype == torch.float16 and q.shape[-1] in (64, 128)
+-            and q.shape[1] % 64 == 0 and q.shape[2] % k.shape[2] == 0
++            and q.shape[2] % k.shape[2] == 0
++            and (causal or (q.shape[1] % 64 == 0 and k.shape[1] % 64 == 0))
+             and dropout_p == 0.0 and alibi_slopes is None and softcap == 0.0
+             and window_size_left == -1 and window_size_right == -1):
+         import os
+@@ -103,15 +108,27 @@ def _flash_attn_forward(
+             sources=[os.path.join(os.path.dirname(__file__), "..", "csrc",
+                                   "flash_attn", "bridge", "bridge_shim.cu")],
+             extra_cuda_cflags=["-arch=sm_75", "-O3"], verbose=False)
++        b, s_q, h_qr, d = q.shape
++        s_k = k.shape[1]
++        q0 = s_k - s_q
++        if s_q % 64 or s_k % 64:
++            assert causal, "bridge padding path is causal-only"
++            pad_q = -s_q % 64
++            pad_k = -s_k % 64
++            if pad_q:
++                q = torch.nn.functional.pad(q, (0, 0, 0, 0, 0, pad_q))
++            if pad_k:
++                k = torch.nn.functional.pad(k, (0, 0, 0, 0, 0, pad_k))
++                v = torch.nn.functional.pad(v, (0, 0, 0, 0, 0, pad_k))
+         # the bridge kernel is (b, h, s, d)-contiguous; FA2 is (b, s, h, d)
+         out = _bf.bridge_fwd_sm75(
+             q.permute(0, 2, 1, 3).contiguous(),
+             k.permute(0, 2, 1, 3).contiguous(),
+-            v.permute(0, 2, 1, 3).contiguous(), causal
++            v.permute(0, 2, 1, 3).contiguous(), causal, q0
+         ).permute(0, 2, 1, 3)
+-        lse = torch.zeros((q.shape[0] * q.shape[2], q.shape[1]),
++        lse = torch.zeros((b * h_qr, s_q),
+                           dtype=torch.float32, device=q.device)
+-        return out, lse, None, None
++        return out[:, :s_q], lse, None, None
+     out, softmax_lse, S_dmask, rng_state = flash_attn_gpu.fwd(
+         q,
+         k,
+-- 
+2.55.0
+

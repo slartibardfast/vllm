@@ -1,0 +1,99 @@
+From 9eb401234d98eb5bcf7c51582a2c12f6354f1ef3 Mon Sep 17 00:00:00 2001
+From: dconnolly <dconnolly@localhost>
+Date: Sun, 6 Sep 2026 23:30:17 +0100
+Subject: [PATCH 6/7] softcap carried through the shim and interface: bridge
+ route accepts any softcap and passes it to the kernel as a float
+
+---
+ csrc/flash_attn/bridge/bridge_shim.cu | 18 ++++++++++--------
+ flash_attn/flash_attn_interface.py    |  4 ++--
+ 2 files changed, 12 insertions(+), 10 deletions(-)
+
+diff --git a/csrc/flash_attn/bridge/bridge_shim.cu b/csrc/flash_attn/bridge/bridge_shim.cu
+index 531142d..7bd3927 100644
+--- a/csrc/flash_attn/bridge/bridge_shim.cu
++++ b/csrc/flash_attn/bridge/bridge_shim.cu
+@@ -14,20 +14,21 @@ __global__ void bridge_fwd_kernel(const __half* __restrict__ q,
+                                   const __half* __restrict__ k,
+                                   const __half* __restrict__ v,
+                                   __half* __restrict__ out, int sq, int s,
+-                                  int q0, int h_q, int h_kv, int causal_flag) {
++                                  int q0, int h_q, int h_kv, int causal_flag,
++                                  float softcap) {
+   extern __shared__ __half smem[];
+   int bh = blockIdx.x;
+   int kvh = (bh % h_q) / (h_q / h_kv);
+   long qoff = (long)bh * sq * D;
+   long koff = ((long)(bh / h_q) * h_kv + kvh) * s * D;
+   bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff, sq,
+-                                 s, q0, causal_flag != 0, smem);
++                                 s, q0, causal_flag != 0, softcap, smem);
+ }
+ 
+ template <int D>
+ static void launch(const at::Half* q, const at::Half* k, const at::Half* v,
+                    at::Half* out, int b, int h_q, int h_kv, int sq, int s,
+-                   int q0, bool causal, cudaStream_t stream) {
++                   int q0, bool causal, float softcap, cudaStream_t stream) {
+   constexpr int kStride = D + 8;
+   size_t smem = (D == 256)
+       ? size_t(2) * 32 * kStride * 2  // no sQ; 32-row K+V
+@@ -37,11 +38,12 @@ static void launch(const at::Half* q, const at::Half* k, const at::Half* v,
+   bridge_fwd_kernel<D><<<dim3(b * h_q, sq / 64), 128, smem, stream>>>(
+       reinterpret_cast<const __half*>(q), reinterpret_cast<const __half*>(k),
+       reinterpret_cast<const __half*>(v), reinterpret_cast<__half*>(out), sq,
+-      s, q0, h_q, h_kv, causal ? 1 : 0);
++      s, q0, h_q, h_kv, causal ? 1 : 0, softcap);
+ }
+ 
+ torch::Tensor bridge_fwd_sm75(torch::Tensor q, torch::Tensor k,
+-                              torch::Tensor v, bool causal, int64_t q0) {
++                              torch::Tensor v, bool causal, int64_t q0,
++                              double softcap) {
+   // (b, h, s, d)-contiguous input (the interface permutes FA2's
+   // (b, s, h, d) before calling); sq = q rows, s = kv rows
+   const int b = q.size(0), h_q = q.size(1), sq = q.size(2), d = q.size(3);
+@@ -56,15 +58,15 @@ torch::Tensor bridge_fwd_sm75(torch::Tensor q, torch::Tensor k,
+   if (d == 64)
+     launch<64>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
+                v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
+-               sq, s, (int)q0, causal, stream);
++               sq, s, (int)q0, causal, (float)softcap, stream);
+   else if (d == 128)
+     launch<128>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
+                 v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
+-                sq, s, (int)q0, causal, stream);
++                sq, s, (int)q0, causal, (float)softcap, stream);
+   else
+     launch<256>(q.data_ptr<at::Half>(), k.data_ptr<at::Half>(),
+                 v.data_ptr<at::Half>(), out.data_ptr<at::Half>(), b, h_q, h_kv,
+-                sq, s, (int)q0, causal, stream);
++                sq, s, (int)q0, causal, (float)softcap, stream);
+   return out;
+ }
+ 
+diff --git a/flash_attn/flash_attn_interface.py b/flash_attn/flash_attn_interface.py
+index 96ebeeb..c0eda42 100644
+--- a/flash_attn/flash_attn_interface.py
++++ b/flash_attn/flash_attn_interface.py
+@@ -98,7 +98,7 @@ def _flash_attn_forward(
+             and q.dtype == torch.float16 and q.shape[-1] in (64, 128, 256)
+             and q.shape[2] % k.shape[2] == 0
+             and (causal or (q.shape[1] % 64 == 0 and k.shape[1] % 64 == 0))
+-            and dropout_p == 0.0 and alibi_slopes is None and softcap == 0.0
++            and dropout_p == 0.0 and alibi_slopes is None
+             and window_size_left == -1 and window_size_right == -1):
+         import os
+         os.environ.setdefault("CUDA_HOME", "/opt/cuda")
+@@ -124,7 +124,7 @@ def _flash_attn_forward(
+         out = _bf.bridge_fwd_sm75(
+             q.permute(0, 2, 1, 3).contiguous(),
+             k.permute(0, 2, 1, 3).contiguous(),
+-            v.permute(0, 2, 1, 3).contiguous(), causal, q0
++            v.permute(0, 2, 1, 3).contiguous(), causal, q0, float(softcap)
+         ).permute(0, 2, 1, 3)
+         lse = torch.zeros((b * h_qr, s_q),
+                           dtype=torch.float32, device=q.device)
+-- 
+2.55.0
+
