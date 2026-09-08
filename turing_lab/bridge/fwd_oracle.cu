@@ -10,7 +10,7 @@
 #include <cuda_fp16.h>
 #include "flash_fwd_sm75.cuh"
 
-template <int D>
+template <int D, bool kLd>
 __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
                       __half* out, int sq, int s, int q0, int h_q, int h_kv,
                       int causal_flag, float softcap) {
@@ -19,8 +19,9 @@ __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
   int kv_head = (bh % h_q) / (h_q / h_kv);
   long qoff = (long)bh * sq * D;
   long koff = ((long)(bh / h_q) * h_kv + kv_head) * s * D;
-  bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff, sq,
-                                 s, q0, causal_flag != 0, softcap, smem);
+  bridge_flash::flash_fwd_one<D, kLd>(q + qoff, k + koff, v + koff,
+                                 out + qoff, sq, s, q0, causal_flag != 0,
+                                 softcap, smem);
 }
 
 template <int D>
@@ -42,13 +43,25 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale,
   size_t smem = (D == 256)
       ? size_t(2) * 32 * kStride * 2  // no sQ; 32-row K+V
       : size_t(3) * 64 * kStride * 2;
-  cudaFuncSetAttribute(k_fwd<D>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                       (int)smem);
   int failures = 0;
   for (int causal = 0; causal <= 1; causal++) {
     cudaMemset(o, 0, nq * 2);
-    k_fwd<D><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq, s, q0, h_q,
-                                                    h_kv, causal, softcap);
+    // kLd mirrors the engine route: decode-shaped calls (one padded q
+    // tile) use the pre-tuning loads; larger sq uses ldmatrix
+    if (sq <= 64)
+      cudaFuncSetAttribute(k_fwd<D, false>,
+                           cudaFuncAttributeMaxDynamicSharedMemorySize,
+                           (int)smem);
+    else
+      cudaFuncSetAttribute(k_fwd<D, true>,
+                           cudaFuncAttributeMaxDynamicSharedMemorySize,
+                           (int)smem);
+    if (sq <= 64)
+      k_fwd<D, false><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq,
+          s, q0, h_q, h_kv, causal, softcap);
+    else
+      k_fwd<D, true><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq,
+          s, q0, h_q, h_kv, causal, softcap);
     cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) { printf("d=%d gqa=%d causal=%d: %s\n", D, h_q / h_kv,
                                    causal, cudaGetErrorString(e)); failures++; continue; }

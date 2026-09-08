@@ -1,0 +1,263 @@
+{
+ "date": "2026-09-07",
+ "kernel": "69e91020",
+ "rows": {
+  "tp1:BRIDGE_ATTN:ctx2048_decode": 32.4,
+  "tp1:BRIDGE_ATTN:ctx2048_mixed": 28.8,
+  "tp1:BRIDGE_ATTN:ctx2048_prefill": 13408.0,
+  "tp1:BRIDGE_ATTN:ctx512_decode": 33.3,
+  "tp1:BRIDGE_ATTN:ctx512_mixed": 32.8,
+  "tp1:BRIDGE_ATTN:ctx512_prefill": 11906.3,
+  "tp1:BRIDGE_ATTN:short_decode": 53.9,
+  "tp1:TRITON_ATTN:ctx2048_decode": 47.7,
+  "tp1:TRITON_ATTN:ctx2048_mixed": 28.3,
+  "tp1:TRITON_ATTN:ctx2048_prefill": 4241.2,
+  "tp1:TRITON_ATTN:ctx512_decode": 50.9,
+  "tp1:TRITON_ATTN:ctx512_mixed": 47.4,
+  "tp1:TRITON_ATTN:ctx512_prefill": 7681.3,
+  "tp1:TRITON_ATTN:short_decode": 191.4,
+  "tp2:BRIDGE_ATTN:ctx2048_decode": 14.0,
+  "tp2:BRIDGE_ATTN:ctx2048_mixed": 13.3,
+  "tp2:BRIDGE_ATTN:ctx2048_prefill": 10068.2,
+  "tp2:BRIDGE_ATTN:ctx512_decode": 14.1,
+  "tp2:BRIDGE_ATTN:ctx512_mixed": 14.1,
+  "tp2:BRIDGE_ATTN:ctx512_prefill": 3303.2,
+  "tp2:BRIDGE_ATTN:short_decode": 22.7,
+  "tp2:TRITON_ATTN:ctx2048_decode": 42.6,
+  "tp2:TRITON_ATTN:ctx2048_mixed": 32.0,
+  "tp2:TRITON_ATTN:ctx2048_prefill": 7501.3,
+  "tp2:TRITON_ATTN:ctx512_decode": 39.7,
+  "tp2:TRITON_ATTN:ctx512_mixed": 38.9,
+  "tp2:TRITON_ATTN:ctx512_prefill": 11999.9,
+  "tp2:TRITON_ATTN:short_decode": 301.7
+ },
+ "spreads": {
+  "tp1:BRIDGE_ATTN:ctx2048_decode:restarts": [
+   32.4
+  ],
+  "tp1:BRIDGE_ATTN:ctx2048_mixed:restarts": [
+   28.8
+  ],
+  "tp1:BRIDGE_ATTN:ctx2048_prefill:restarts": [
+   13408.0
+  ],
+  "tp1:BRIDGE_ATTN:ctx512_decode:restarts": [
+   33.3
+  ],
+  "tp1:BRIDGE_ATTN:ctx512_mixed:restarts": [
+   32.8
+  ],
+  "tp1:BRIDGE_ATTN:ctx512_prefill:restarts": [
+   11906.3
+  ],
+  "tp1:BRIDGE_ATTN:short_decode:restarts": [
+   53.9
+  ],
+  "tp1:TRITON_ATTN:ctx2048_decode:restarts": [
+   47.7
+  ],
+  "tp1:TRITON_ATTN:ctx2048_mixed:restarts": [
+   28.3
+  ],
+  "tp1:TRITON_ATTN:ctx2048_prefill:restarts": [
+   4241.2
+  ],
+  "tp1:TRITON_ATTN:ctx512_decode:restarts": [
+   50.9
+  ],
+  "tp1:TRITON_ATTN:ctx512_mixed:restarts": [
+   47.4
+  ],
+  "tp1:TRITON_ATTN:ctx512_prefill:restarts": [
+   7681.3
+  ],
+  "tp1:TRITON_ATTN:short_decode:restarts": [
+   191.4
+  ],
+  "tp2:BRIDGE_ATTN:ctx2048_decode:restarts": [
+   13.1,
+   14.0,
+   15.8
+  ],
+  "tp2:BRIDGE_ATTN:ctx2048_mixed:restarts": [
+   12.4,
+   13.3,
+   15.5
+  ],
+  "tp2:BRIDGE_ATTN:ctx2048_prefill:restarts": [
+   10028.9,
+   10068.2,
+   10600.0
+  ],
+  "tp2:BRIDGE_ATTN:ctx512_decode:restarts": [
+   13.9,
+   14.1,
+   15.6
+  ],
+  "tp2:BRIDGE_ATTN:ctx512_mixed:restarts": [
+   13.6,
+   14.1,
+   14.9
+  ],
+  "tp2:BRIDGE_ATTN:ctx512_prefill:restarts": [
+   3265.1,
+   3303.2,
+   3317.2
+  ],
+  "tp2:BRIDGE_ATTN:short_decode:restarts": [
+   22.6,
+   22.7,
+   23.0
+  ],
+  "tp2:TRITON_ATTN:ctx2048_decode:restarts": [
+   41.9,
+   42.6,
+   42.8
+  ],
+  "tp2:TRITON_ATTN:ctx2048_mixed:restarts": [
+   31.6,
+   32.0,
+   32.1
+  ],
+  "tp2:TRITON_ATTN:ctx2048_prefill:restarts": [
+   7494.4,
+   7501.3,
+   7526.7
+  ],
+  "tp2:TRITON_ATTN:ctx512_decode:restarts": [
+   35.3,
+   39.7,
+   41.4
+  ],
+  "tp2:TRITON_ATTN:ctx512_mixed:restarts": [
+   34.7,
+   38.9,
+   40.5
+  ],
+  "tp2:TRITON_ATTN:ctx512_prefill:restarts": [
+   11821.1,
+   11999.9,
+   12043.2
+  ],
+  "tp2:TRITON_ATTN:short_decode:restarts": [
+   296.1,
+   301.7,
+   303.2
+  ]
+ },
+ "baseline_used": "2026-09-06",
+ "verdicts": [
+  [
+   "tp1:BRIDGE_ATTN:ctx2048_decode",
+   "VARIANCE-BOUND"
+  ],
+  [
+   "tp1:BRIDGE_ATTN:ctx2048_mixed",
+   "VARIANCE-BOUND"
+  ],
+  [
+   "tp1:BRIDGE_ATTN:ctx2048_prefill",
+   "PASS+"
+  ],
+  [
+   "tp1:BRIDGE_ATTN:ctx512_decode",
+   "PASS+"
+  ],
+  [
+   "tp1:BRIDGE_ATTN:ctx512_mixed",
+   "PASS+"
+  ],
+  [
+   "tp1:BRIDGE_ATTN:ctx512_prefill",
+   "PASS+"
+  ],
+  [
+   "tp1:BRIDGE_ATTN:short_decode",
+   "PASS"
+  ],
+  [
+   "tp1:TRITON_ATTN:ctx2048_decode",
+   "PASS+"
+  ],
+  [
+   "tp1:TRITON_ATTN:ctx2048_mixed",
+   "PASS+"
+  ],
+  [
+   "tp1:TRITON_ATTN:ctx2048_prefill",
+   "PASS+"
+  ],
+  [
+   "tp1:TRITON_ATTN:ctx512_decode",
+   "PASS+"
+  ],
+  [
+   "tp1:TRITON_ATTN:ctx512_mixed",
+   "PASS+"
+  ],
+  [
+   "tp1:TRITON_ATTN:ctx512_prefill",
+   "PASS"
+  ],
+  [
+   "tp1:TRITON_ATTN:short_decode",
+   "PASS+"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:ctx2048_decode",
+   "VARIANCE-BOUND"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:ctx2048_mixed",
+   "VARIANCE-BOUND"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:ctx2048_prefill",
+   "PASS+"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:ctx512_decode",
+   "VARIANCE-BOUND"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:ctx512_mixed",
+   "PASS"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:ctx512_prefill",
+   "PASS+"
+  ],
+  [
+   "tp2:BRIDGE_ATTN:short_decode",
+   "PASS+"
+  ],
+  [
+   "tp2:TRITON_ATTN:ctx2048_decode",
+   "PASS"
+  ],
+  [
+   "tp2:TRITON_ATTN:ctx2048_mixed",
+   "PASS+"
+  ],
+  [
+   "tp2:TRITON_ATTN:ctx2048_prefill",
+   "PASS+"
+  ],
+  [
+   "tp2:TRITON_ATTN:ctx512_decode",
+   "PASS"
+  ],
+  [
+   "tp2:TRITON_ATTN:ctx512_mixed",
+   "PASS"
+  ],
+  [
+   "tp2:TRITON_ATTN:ctx512_prefill",
+   "PASS+"
+  ],
+  [
+   "tp2:TRITON_ATTN:short_decode",
+   "PASS"
+  ]
+ ]
+}

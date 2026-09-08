@@ -1,0 +1,170 @@
+diff --git a/turing_lab/bridge/flash_fwd_sm75.cuh b/turing_lab/bridge/flash_fwd_sm75.cuh
+index f3447a975e..73f282e98c 100644
+--- a/turing_lab/bridge/flash_fwd_sm75.cuh
++++ b/turing_lab/bridge/flash_fwd_sm75.cuh
+@@ -40,7 +40,7 @@ __device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
+ // d=256 (plan/0007, k-chunked): 32-row KV tiles single-buffered and Q
+ // fragments loaded straight from gmem (no sQ) - smem stays ~34KB and the
+ // 256-deep S/PV accumulations ride the same m16n8k8 chains per chunk.
+-template <int D>
++template <int D, bool kLd>
+ __device__ __forceinline__ void flash_fwd_one(
+     const __half* __restrict__ q, const __half* __restrict__ k,
+     const __half* __restrict__ v, __half* __restrict__ out, int sq, int s,
+@@ -114,7 +114,12 @@ __device__ __forceinline__ void flash_fwd_one(
+   // decode-shaped calls (one 64-row q tile, mostly padding) measure
+   // faster with the pre-tuning smem loads under TP2 lockstep; ldmatrix
+   // pays off on prefill-shaped tiles. Chosen per call from sq.
+-  const bool kUseLd = (sq > kBlockRows);
++  // ldmatrix wins on prefill-shaped tiles (sq > 64); decode-shaped calls
++  // (one padded q tile) keep the pre-tuning smem loads - chosen at launch
++  // so each instantiation carries a single load path (register profile
++  // matches the plan/0006 kernel; the runtime dual path measured 15
++  // percent slower on tp2 bridge decode under lockstep).
++  constexpr bool kUseLd = kLd;
+   // causal compares kv columns against ABSOLUTE query positions; the
+   // output row index stays tile-relative (the chunk's own rows)
+   const int q_abs_lo = q0 + (int)q_base + row_lo;
+@@ -195,7 +200,7 @@ __device__ __forceinline__ void flash_fwd_one(
+       // (4*G+M)*8..+7 over d = ks*8..+8; the x4 output distribution
+       // (row = l/4, colpair = l%4) is exactly {K[n][ks*8+2t], +1},
+       // n = nt8*8 + g.
+-      if (kUseLd) {
++      if constexpr (kUseLd) {
+ #pragma unroll
+         for (int grp = 0; grp < kNt8 / 4; grp++) {
+           const __half* arow =
+@@ -316,7 +321,7 @@ __device__ __forceinline__ void flash_fwd_one(
+       // {V[k][n], V[k+1][n]} with k = ks*8+2t, n = cc*8+g.
+       uint32_t vb[4];
+       const int vbuf = (kDBuf ? (nt & 1) * kBlockKVD * kStride : 0);
+-      if (kUseLd) {
++      if constexpr (kUseLd) {
+         // ldmatrix.trans: matrix M of group ccg carries V rows ks*8..+7
+         // over d = (4*ccg+M)*8..+8; lane l gets {V[ks*8+2t][(4*ccg+M)*8+g], +1}
+ #pragma unroll
+diff --git a/turing_lab/bridge/fwd_bench.cu b/turing_lab/bridge/fwd_bench.cu
+index 361b83f22a..bd3692f65c 100644
+--- a/turing_lab/bridge/fwd_bench.cu
++++ b/turing_lab/bridge/fwd_bench.cu
+@@ -31,23 +31,23 @@ int main() {
+     size_t smem = (D == 256)
+         ? size_t(2) * 32 * (D + 8) * 2   // no sQ; 32-row K+V
+         : size_t(3) * 64 * (D + 8) * 2;
+-    cudaFuncSetAttribute(k_fwd<64>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+-    cudaFuncSetAttribute(k_fwd<128>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+-    cudaFuncSetAttribute(k_fwd<256>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
++    cudaFuncSetAttribute(k_fwd<64, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
++    cudaFuncSetAttribute(k_fwd<128, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
++    cudaFuncSetAttribute(k_fwd<256, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+     // warmup + timing (causal=1, the serving case)
+     for (int r = 0; r < 3; r++) {
+-      if (D == 64) k_fwd<64><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+-      else if (D == 128) k_fwd<128><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+-      else k_fwd<256><<<grid, 128, smem>>>(q, k, v, o, s, 1);
++      if (D == 64) k_fwd<64, true><<<grid, 128, smem>>>(q, k, v, o, s, 1);
++      else if (D == 128) k_fwd<128, true><<<grid, 128, smem>>>(q, k, v, o, s, 1);
++      else k_fwd<256, true><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+     }
+     cudaDeviceSynchronize();
+     cudaEvent_t a, e; cudaEventCreate(&a); cudaEventCreate(&e);
+     float best = 1e30f;
+     for (int r = 0; r < 10; r++) {
+       cudaEventRecord(a);
+-      if (D == 64) k_fwd<64><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+-      else if (D == 128) k_fwd<128><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+-      else k_fwd<256><<<grid, 128, smem>>>(q, k, v, o, s, 1);
++      if (D == 64) k_fwd<64, true><<<grid, 128, smem>>>(q, k, v, o, s, 1);
++      else if (D == 128) k_fwd<128, true><<<grid, 128, smem>>>(q, k, v, o, s, 1);
++      else k_fwd<256, true><<<grid, 128, smem>>>(q, k, v, o, s, 1);
+       cudaEventRecord(e); cudaEventSynchronize(e);
+       float ms; cudaEventElapsedTime(&ms, a, e);
+       if (ms < best) best = ms;
+diff --git a/turing_lab/bridge/fwd_oracle.cu b/turing_lab/bridge/fwd_oracle.cu
+index 1b23a103a9..30beba8792 100644
+--- a/turing_lab/bridge/fwd_oracle.cu
++++ b/turing_lab/bridge/fwd_oracle.cu
+@@ -10,7 +10,7 @@
+ #include <cuda_fp16.h>
+ #include "flash_fwd_sm75.cuh"
+ 
+-template <int D>
++template <int D, bool kLd>
+ __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
+                       __half* out, int sq, int s, int q0, int h_q, int h_kv,
+                       int causal_flag, float softcap) {
+@@ -19,8 +19,9 @@ __global__ void k_fwd(const __half* q, const __half* k, const __half* v,
+   int kv_head = (bh % h_q) / (h_q / h_kv);
+   long qoff = (long)bh * sq * D;
+   long koff = ((long)(bh / h_q) * h_kv + kv_head) * s * D;
+-  bridge_flash::flash_fwd_one<D>(q + qoff, k + koff, v + koff, out + qoff, sq,
+-                                 s, q0, causal_flag != 0, softcap, smem);
++  bridge_flash::flash_fwd_one<D, kLd>(q + qoff, k + koff, v + koff,
++                                 out + qoff, sq, s, q0, causal_flag != 0,
++                                 softcap, smem);
+ }
+ 
+ template <int D>
+@@ -42,13 +43,25 @@ int run_case(int b, int h_q, int h_kv, int s, int sq, int q0, float in_scale,
+   size_t smem = (D == 256)
+       ? size_t(2) * 32 * kStride * 2  // no sQ; 32-row K+V
+       : size_t(3) * 64 * kStride * 2;
+-  cudaFuncSetAttribute(k_fwd<D>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+-                       (int)smem);
+   int failures = 0;
+   for (int causal = 0; causal <= 1; causal++) {
+     cudaMemset(o, 0, nq * 2);
+-    k_fwd<D><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq, s, q0, h_q,
+-                                                    h_kv, causal, softcap);
++    // kLd mirrors the engine route: decode-shaped calls (one padded q
++    // tile) use the pre-tuning loads; larger sq uses ldmatrix
++    if (sq <= 64)
++      cudaFuncSetAttribute(k_fwd<D, false>,
++                           cudaFuncAttributeMaxDynamicSharedMemorySize,
++                           (int)smem);
++    else
++      cudaFuncSetAttribute(k_fwd<D, true>,
++                           cudaFuncAttributeMaxDynamicSharedMemorySize,
++                           (int)smem);
++    if (sq <= 64)
++      k_fwd<D, false><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq,
++          s, q0, h_q, h_kv, causal, softcap);
++    else
++      k_fwd<D, true><<<dim3(b * h_q, sq / 64), 128, smem>>>(q, k, v, o, sq,
++          s, q0, h_q, h_kv, causal, softcap);
+     cudaError_t e = cudaDeviceSynchronize();
+     if (e != cudaSuccess) { printf("d=%d gqa=%d causal=%d: %s\n", D, h_q / h_kv,
+                                    causal, cudaGetErrorString(e)); failures++; continue; }
+diff --git a/turing_lab/thirdparty/vllm_macro_gate.py b/turing_lab/thirdparty/vllm_macro_gate.py
+index dc8b988993..f338ec53fa 100644
+--- a/turing_lab/thirdparty/vllm_macro_gate.py
++++ b/turing_lab/thirdparty/vllm_macro_gate.py
+@@ -86,11 +86,12 @@ def clocks_ok():
+     return ok
+ 
+ 
+-def run_arm(backend, tp):
++def run_arm(backend, tp, model=None):
+     from vllm import LLM, SamplingParams
+-    model = ("/home/dconnolly/.cache/huggingface/hub/models--Qwen--"
+-             "Qwen2.5-1.5B-Instruct/snapshots/"
+-             "989aa7980e4cf806f80c7fef2b1adb7bc71aa306")
++    if model is None:
++        model = ("/home/dconnolly/.cache/huggingface/hub/models--Qwen--"
++                 "Qwen2.5-1.5B-Instruct/snapshots/"
++                 "989aa7980e4cf806f80c7fef2b1adb7bc71aa306")
+     kw = dict(model=model, dtype="float16", tensor_parallel_size=tp,
+               gpu_memory_utilization=0.90, max_model_len=4096,
+               enforce_eager=True, attention_backend=backend,
+@@ -140,7 +141,10 @@ def parse_child(text, backend, tp):
+ 
+ def main():
+     if len(sys.argv) > 2 and sys.argv[1] == "--arm":
+-        run_arm(sys.argv[2], int(sys.argv[3]))
++        if len(sys.argv) > 4:
++            run_arm(sys.argv[2], int(sys.argv[3]), model=sys.argv[4])
++        else:
++            run_arm(sys.argv[2], int(sys.argv[3]))
+         return
+ 
+     assert clocks_ok(), "clocks are not locked; refusing to gate"

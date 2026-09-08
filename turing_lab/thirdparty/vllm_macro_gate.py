@@ -86,11 +86,12 @@ def clocks_ok():
     return ok
 
 
-def run_arm(backend, tp):
+def run_arm(backend, tp, model=None):
     from vllm import LLM, SamplingParams
-    model = ("/home/dconnolly/.cache/huggingface/hub/models--Qwen--"
-             "Qwen2.5-1.5B-Instruct/snapshots/"
-             "989aa7980e4cf806f80c7fef2b1adb7bc71aa306")
+    if model is None:
+        model = ("/home/dconnolly/.cache/huggingface/hub/models--Qwen--"
+                 "Qwen2.5-1.5B-Instruct/snapshots/"
+                 "989aa7980e4cf806f80c7fef2b1adb7bc71aa306")
     kw = dict(model=model, dtype="float16", tensor_parallel_size=tp,
               gpu_memory_utilization=0.90, max_model_len=4096,
               enforce_eager=True, attention_backend=backend,
@@ -140,7 +141,10 @@ def parse_child(text, backend, tp):
 
 def main():
     if len(sys.argv) > 2 and sys.argv[1] == "--arm":
-        run_arm(sys.argv[2], int(sys.argv[3]))
+        if len(sys.argv) > 4:
+            run_arm(sys.argv[2], int(sys.argv[3]), model=sys.argv[4])
+        else:
+            run_arm(sys.argv[2], int(sys.argv[3]))
         return
 
     assert clocks_ok(), "clocks are not locked; refusing to gate"

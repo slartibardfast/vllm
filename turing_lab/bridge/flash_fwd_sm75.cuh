@@ -40,7 +40,7 @@ __device__ __forceinline__ uint32_t pack_half(float lo, float hi) {
 // d=256 (plan/0007, k-chunked): 32-row KV tiles single-buffered and Q
 // fragments loaded straight from gmem (no sQ) - smem stays ~34KB and the
 // 256-deep S/PV accumulations ride the same m16n8k8 chains per chunk.
-template <int D>
+template <int D, bool kLd>
 __device__ __forceinline__ void flash_fwd_one(
     const __half* __restrict__ q, const __half* __restrict__ k,
     const __half* __restrict__ v, __half* __restrict__ out, int sq, int s,
@@ -114,7 +114,12 @@ __device__ __forceinline__ void flash_fwd_one(
   // decode-shaped calls (one 64-row q tile, mostly padding) measure
   // faster with the pre-tuning smem loads under TP2 lockstep; ldmatrix
   // pays off on prefill-shaped tiles. Chosen per call from sq.
-  const bool kUseLd = (sq > kBlockRows);
+  // ldmatrix wins on prefill-shaped tiles (sq > 64); decode-shaped calls
+  // (one padded q tile) keep the pre-tuning smem loads - chosen at launch
+  // so each instantiation carries a single load path (register profile
+  // matches the plan/0006 kernel; the runtime dual path measured 15
+  // percent slower on tp2 bridge decode under lockstep).
+  constexpr bool kUseLd = kLd;
   // causal compares kv columns against ABSOLUTE query positions; the
   // output row index stays tile-relative (the chunk's own rows)
   const int q_abs_lo = q0 + (int)q_base + row_lo;
@@ -195,7 +200,7 @@ __device__ __forceinline__ void flash_fwd_one(
       // (4*G+M)*8..+7 over d = ks*8..+8; the x4 output distribution
       // (row = l/4, colpair = l%4) is exactly {K[n][ks*8+2t], +1},
       // n = nt8*8 + g.
-      if (kUseLd) {
+      if constexpr (kUseLd) {
 #pragma unroll
         for (int grp = 0; grp < kNt8 / 4; grp++) {
           const __half* arow =
@@ -316,7 +321,7 @@ __device__ __forceinline__ void flash_fwd_one(
       // {V[k][n], V[k+1][n]} with k = ks*8+2t, n = cc*8+g.
       uint32_t vb[4];
       const int vbuf = (kDBuf ? (nt & 1) * kBlockKVD * kStride : 0);
-      if (kUseLd) {
+      if constexpr (kUseLd) {
         // ldmatrix.trans: matrix M of group ccg carries V rows ks*8..+7
         // over d = (4*ccg+M)*8..+8; lane l gets {V[ks*8+2t][(4*ccg+M)*8+g], +1}
 #pragma unroll
