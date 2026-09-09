@@ -31,3 +31,15 @@ PREEMPTED).
 The floor-anchored acceptance is effectively MET on the TRITON backend.
 The with-MTP measurement (graphs x native mtp K=3) follows this record;
 the eager-measured 1.75x projects ~87 tok/s ctx512-class.
+
+## MTP x graphs (the final measurement, 2026-09-09)
+
+Native mtp K=3 under CUDA graphs on the 27B: greedy-lossless (5/5),
+canaries clean, but NO COMPOUND - mixed-row speedup 0.93x (ctx512) /
+1.11x (ctx2048) versus the graphs-only base. The eager-world 1.75x was
+largely buying back the same launch latency the graphs already
+reclaimed; the levers overlap, they do not stack. The 87 tok/s
+projection is falsified for this configuration. Past-the-floor via MTP
+needs a mechanism that survives graphs (deeper K, acceptance-aware
+scheduling, or MTP reserved to prefill-heavy regimes) - recorded as the
+follow-up, with both regimes' real numbers kept separate.
