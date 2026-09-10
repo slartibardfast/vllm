@@ -47,6 +47,9 @@ class BridgeAttentionMetadata:
     block_table: torch.Tensor
     query_start_loc_cpu: list[int]
     seq_lens_cpu: list[int]
+    # device-side lengths (replay-updated under CUDA graphs; the
+    # C2 paged kernel reads this, the python loop reads the list)
+    seq_lens: torch.Tensor
 
 
 class BridgeAttentionMetadataBuilder(
@@ -77,6 +80,7 @@ class BridgeAttentionMetadataBuilder(
             num_actual_tokens=common_attn_metadata.num_actual_tokens,
             causal=common_attn_metadata.causal,
             block_table=common_attn_metadata.block_table_tensor,
+            seq_lens=common_attn_metadata.seq_lens,
             query_start_loc_cpu=common_attn_metadata.query_start_loc_cpu.tolist(),
             seq_lens_cpu=common_attn_metadata.seq_lens.cpu().tolist(),
         )
@@ -202,6 +206,38 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
             raise NotImplementedError(
                 "bridge_attn: fused block-scale output not supported"
             )
+        # C2 (window 3): paged decode - one kernel, no gather, reads the
+        # block table directly. Decode-shaped steps only (every request
+        # exactly one query row); chunked prefill falls to the loop.
+        import os as _os
+        if _os.environ.get("BRIDGE_PAGED_DECODE") == "1":
+            qsl_ = attn_metadata.query_start_loc_cpu
+            n = attn_metadata.num_reqs
+            decode_shaped = (n > 0 and qsl_[0] == 0 and all(
+                qsl_[i + 1] - qsl_[i] == 1 for i in range(n))
+                and qsl_[n] <= attn_metadata.num_actual_tokens)
+            if decode_shaped:
+                if not hasattr(self, "_paged"):
+                    import os as _os2
+                    from torch.utils.cpp_extension import load as _load
+                    self._paged = _load(
+                        name="bridge_paged_decode",
+                        sources=[_os2.path.join(
+                            _os2.path.dirname(__file__), "..", "..",
+                            "..", "..", "turing_lab", "bridge",
+                            "bridge_paged_decode.cu")],
+                        extra_cuda_cflags=["-arch=sm_75", "-O3"],
+                        verbose=False)
+                q_rows = query[:n].view(n, self.num_heads, 1,
+                                        self.head_size)
+                out_p = self._paged.bridge_paged_decode(
+                    q_rows, kv_cache, attn_metadata.block_table,
+                    attn_metadata.seq_lens[:n].to(torch.int32),
+                    self.scale, 0.0)
+                output[:n].copy_(out_p.view(n, self.num_heads,
+                                            self.head_size))
+                return output
+
         global _route_logged
         if not _route_logged:
             _route_logged = True
@@ -217,15 +253,43 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
         block_table = attn_metadata.block_table
         block_size = kv_cache.shape[2]
         nat = attn_metadata.num_actual_tokens
+        import os as _os
+        batched = (_os.environ.get("BRIDGE_BATCHED_GATHER") == "1"
+                   and attn_metadata.num_reqs > 1)
+        if batched:
+            # C1 (window 3): ONE gather for all requests - the per-request
+            # gather-op storm (plan/0006 trace: 1372 copies + 448 puts vs
+            # 224 kernels) collapses to a single indexed read + slicing
+            sl_raw = seq_lens[:attn_metadata.num_reqs]
+            # seq_lens is a list during graph profiling, a tensor at run
+            sl = (sl_raw if isinstance(sl_raw, torch.Tensor)
+                  else torch.tensor(sl_raw, dtype=torch.long))
+            npages = (sl + block_size - 1) // block_size
+            offs = torch.cumsum(npages, 0) - npages
+            ridx = torch.repeat_interleave(
+                torch.arange(attn_metadata.num_reqs), npages)
+            pidx = torch.arange(int(npages.sum())) - offs[ridx].to(
+                torch.int64)
+            pages_flat = block_table[ridx.to(block_table.device), pidx]
+            nkv = kv_cache.shape[1]
+            hs = self.head_size
+            toks_flat = kv_cache[pages_flat].permute(0, 2, 1, 3).reshape(
+                -1, nkv, 2 * hs)
+            tok_offs = (offs * block_size).tolist()
         for i in range(attn_metadata.num_reqs):
             p0, p1 = qsl[i], qsl[i + 1]
             if p1 <= p0 or p0 >= nat:
                 continue
             p1 = min(p1, nat)
             seq_len = seq_lens[i]
-            n_pages = (seq_len + block_size - 1) // block_size
-            pages = block_table[i, :n_pages]
-            k_rows, v_rows = self._gather_kv(kv_cache, pages)
+            if batched:
+                t0 = tok_offs[i]
+                k_rows = toks_flat[t0:t0 + seq_len, :, :hs]
+                v_rows = toks_flat[t0:t0 + seq_len, :, hs:]
+            else:
+                n_pages = (seq_len + block_size - 1) // block_size
+                pages = block_table[i, :n_pages]
+                k_rows, v_rows = self._gather_kv(kv_cache, pages)
             # bottom-right causal: query block is the chunk's own rows,
             # FA2's seqlen_q != seqlen_k contract covers prefix + chunk
             # and the single-token decode alike
