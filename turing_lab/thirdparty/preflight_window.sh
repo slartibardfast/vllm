@@ -14,10 +14,10 @@ used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits |
 [ "$used" -lt 1000 ] && ok "GPUs free (max used ${used} MiB)" ||
     bad "GPUs occupied (max used ${used} MiB) - stop llama-server first"
 
-# 2. Clocks locked at the house 1455 MHz
+# 2. Clocks locked at the house 1455 MHz (every reading, deduped to one)
 clocks=$(nvidia-smi --query-gpu=clocks.sm --format=csv,noheader,nounits |
          sort -u | tr '\n' ' ')
-[ "$clocks" = "1455 1455 " ] && ok "clocks locked 1455" ||
+[ "$clocks" = "1455 " ] && ok "clocks locked 1455 (all GPUs)" ||
     bad "clocks not locked (got: $clocks) - sudo nvidia-smi -lgc 1455 -i 0,1"
 
 # 3. Toolchain root for worker JIT builds
