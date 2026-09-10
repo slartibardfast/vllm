@@ -134,11 +134,18 @@ __global__ void bridge_paged_split_walk_kernel(
   float* wl = ws_l + (((long)req * h_kv + kvh) * splits + split) * pair_stride;
   float* wo = ws_o +
               ((((long)req * h_kv + kvh) * splits + split) * pair_stride) * d;
+  // emit NORMALIZED partials: o_s / l_s (unit scale) so the combine
+  // is a weighted average, not a large-number multiply-divide — the
+  // unnormalized form cost two orders of magnitude of precision at
+  // long ctx (window 5, oracle 2e-2 vs v1's 2e-4)
   for (int i = 0; i < npair; i++) {
     wm[i] = sm_m[i];
     wl[i] = sm_l[i];
   }
-  for (int i = tid; i < npair * d; i += NTHREADS) wo[i] = sm_o[i];
+  for (int i = tid; i < npair * d; i += NTHREADS) {
+    int pr = i / d;
+    wo[i] = (sm_l[pr] > 0.f) ? sm_o[i] / sm_l[pr] : 0.f;
+  }
 }
 
 // phase 2: combine. grid = (reqs, h_kv); threads cover (pair, dim)
@@ -167,7 +174,7 @@ __global__ void bridge_paged_split_combine_kernel(
   extern __shared__ float csm[];  // m*, l*, per-split weights
   float* c_m = csm;               // QLMAX*g... sized q_len*g
   float* c_l = c_m + pair_stride;
-  float* c_w = c_l + splits * 0 + pair_stride;  // per-split weight
+  float* c_w = c_l + pair_stride;  // per-split weight
 
   if (tid == 0) {
     for (int i = 0; i < npair; i++) {
@@ -192,10 +199,11 @@ __global__ void bridge_paged_split_combine_kernel(
     __half* orow = out + ((long)req * h_q + (long)kvh * g + hl) * q_len * d
                    + (long)qr * d;
     for (int e = tid; e < d; e += NTHREADS) {
+      // o_s is pre-normalized: merge = sum(o_s * l_s * w_s) / sum(l_s * w_s)
       float acc = 0.f;
       for (int s = 0; s < active; s++)
         acc += wo[(s * pair_stride + i) * d + e] *
-               c_w[s * pair_stride + i];
+               wl[s * pair_stride + i] * c_w[s * pair_stride + i];
       orow[e] = __float2half(c_l[i] > 0.f ? acc / c_l[i] : 0.f);
     }
   }
@@ -215,9 +223,13 @@ torch::Tensor bridge_paged_decode_split(
               "pairs must fit the warp iterations");
   TORCH_CHECK((int)kv_cache.size(3) == 2 * d, "kv layout 2*d");
   const int pair_stride = q_len * g;
-  // splits sized for the WORST request (shape-static under graphs)
+  // splits sized for the WORST request (shape-static under graphs).
+  // NO CAP: capping at MAX_SPLITS silently left pages unwalked (the
+  // window-5 long-ctx oracle FAIL: 300-page tables need 38 splits; a
+  // 16 cap covered 128 pages = half the context dropped). grid.z
+  // tolerates thousands; MAX_SPLITS only bounds workspace sanity.
   int splits = (max_pages + PAGES_PER_SPLIT - 1) / PAGES_PER_SPLIT;
-  splits = std::min(splits, MAX_SPLITS);
+  TORCH_CHECK(splits <= 65535, "page table too large for grid.z");
   auto opts = q.options();
   auto ws_m = torch::empty({num_reqs, h_kv, splits, pair_stride},
                            opts.dtype(torch::kFloat));

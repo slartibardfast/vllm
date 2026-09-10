@@ -210,7 +210,8 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
         # block table directly. Decode-shaped steps only (every request
         # exactly one query row); chunked prefill falls to the loop.
         import os as _os
-        if _os.environ.get("BRIDGE_PAGED_DECODE") == "1":
+        _paged_mode = _os.environ.get("BRIDGE_PAGED_DECODE", "0")
+        if _paged_mode in ("1", "split"):
             qsl_ = attn_metadata.query_start_loc_cpu
             n = attn_metadata.num_reqs
             # MTP verification steps carry a uniform K+1 query rows per
@@ -221,20 +222,26 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
                 and 1 <= qlen <= 4
                 and qsl_[n] <= attn_metadata.num_actual_tokens)
             if uniform:
+                import os as _os2
+                use_split = _paged_mode == "split"
                 if not hasattr(self, "_paged"):
-                    import os as _os2
                     from torch.utils.cpp_extension import load as _load
                     self._paged = _load(
-                        name="bridge_paged_decode",
+                        name=("bridge_paged_decode_split"
+                              if use_split else "bridge_paged_decode"),
                         sources=[_os2.path.join(
                             _os2.path.dirname(__file__), "..", "..",
                             "..", "..", "turing_lab", "bridge",
-                            "bridge_paged_decode.cu")],
+                            ("bridge_paged_decode_split.cu"
+                             if use_split
+                             else "bridge_paged_decode.cu"))],
                         extra_cuda_cflags=["-arch=sm_75", "-O3"],
                         verbose=False)
                 q_rows = query[:n * qlen].view(
                     n, self.num_heads, qlen, self.head_size)
-                out_p = self._paged.bridge_paged_decode(
+                fn = (self._paged.bridge_paged_decode_split
+                      if use_split else self._paged.bridge_paged_decode)
+                out_p = fn(
                     q_rows, kv_cache, attn_metadata.block_table,
                     attn_metadata.seq_lens[:n].to(torch.int32),
                     self.scale, 0.0)

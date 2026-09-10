@@ -57,7 +57,8 @@ def run(tag, model, backend, paged):
                 # does not leak the toggle - the script owns it)
                 "BRIDGE_BATCHED_GATHER": "0",
                 "BRIDGE_PAGED_DECODE":
-                    ("1" if paged else "0")})
+                    ({"base": "0", "cand": "split", "off": "0"}.get(
+                        tag, "1" if paged else "0"))})
     with open(log, "w") as lf:
         c = subprocess.Popen([VENV_PY, "-c", CHILD, model, out, backend],
                              stdout=lf, stderr=subprocess.STDOUT, env=env)
