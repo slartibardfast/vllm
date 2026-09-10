@@ -142,3 +142,23 @@ campaign commits are archived as patches at
 turing_lab/results/flash-attn-provenance/ - committed and pushed with
 the lane. To rebuild the tree from scratch: clone upstream at v2.8.3
 (060c918) and `git am` the patches in order.
+
+## Pre-staged (2026-09-10, no-window authoring COMPLETE)
+
+- `turing_lab/bridge/bridge_paged_decode_split.cu` — the split-KV
+  kernel, AUTHORED and standalone-compiled clean (grid.z page chunks,
+  partial m/l/o workspace, combine kernel; workspace is scratch, safe
+  under graphs because combine reads only the splits the same replay's
+  walk wrote).
+- Oracle battery extended (`.weco/c2-paged-decode/oracle.py`):
+  `SPLIT=1` routes to the split kernel; `LONGCTX=1` swaps in long
+  sequences (64/4096 tokens, 300-page tables) that exercise the
+  split path. Neither has RUN (no GPU) - both are first-window items.
+- `bridge_attn.py` paged arm now accepts uniform q_len 1..4 (the MTP
+  K+1 verification shape); py-compiled only - gate-0 is the first
+  window item that exercises it.
+- Window command list, in order: preflight -> `SPLIT=1` oracle (18
+  cases) -> `SPLIT=1 LONGCTX=1` oracle (split path) -> gate-0
+  (paged-split vs triton via a BRIDGE_PAGED_SPLIT env arm, to be
+  added to the backend) -> champion A/B (ctx2048 row decides) ->
+  MTP x paged (K2, 4B).

@@ -213,10 +213,14 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
         if _os.environ.get("BRIDGE_PAGED_DECODE") == "1":
             qsl_ = attn_metadata.query_start_loc_cpu
             n = attn_metadata.num_reqs
-            decode_shaped = (n > 0 and qsl_[0] == 0 and all(
-                qsl_[i + 1] - qsl_[i] == 1 for i in range(n))
+            # MTP verification steps carry a uniform K+1 query rows per
+            # request; the paged kernel handles q_len up to 4
+            qlen = (qsl_[1] - qsl_[0]) if n > 0 else 0
+            uniform = (n > 0 and qsl_[0] == 0 and all(
+                qsl_[i + 1] - qsl_[i] == qlen for i in range(n))
+                and 1 <= qlen <= 4
                 and qsl_[n] <= attn_metadata.num_actual_tokens)
-            if decode_shaped:
+            if uniform:
                 if not hasattr(self, "_paged"):
                     import os as _os2
                     from torch.utils.cpp_extension import load as _load
@@ -228,14 +232,15 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
                             "bridge_paged_decode.cu")],
                         extra_cuda_cflags=["-arch=sm_75", "-O3"],
                         verbose=False)
-                q_rows = query[:n].view(n, self.num_heads, 1,
-                                        self.head_size)
+                q_rows = query[:n * qlen].view(
+                    n, self.num_heads, qlen, self.head_size)
                 out_p = self._paged.bridge_paged_decode(
                     q_rows, kv_cache, attn_metadata.block_table,
                     attn_metadata.seq_lens[:n].to(torch.int32),
                     self.scale, 0.0)
-                output[:n].copy_(out_p.view(n, self.num_heads,
-                                            self.head_size))
+                output[:n * qlen].copy_(
+                    out_p.view(n * qlen, self.num_heads,
+                               self.head_size))
                 return output
 
         global _route_logged
