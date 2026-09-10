@@ -81,6 +81,10 @@ def main():
         env["NCCL_DEBUG_SUBSYS"] = "INIT,TUNING"
         env["FLASHINFER_DISABLE_VERSION_CHECK"] = "1"
         env["CUDA_HOME"] = "/opt/cuda"
+        for kv in (os.environ.get("COMMITTED_ARM_ENV") or "").split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                env[k.strip()] = v.strip()
         import os as _o
         if _o.environ.get("COMMITTED_NO_EAGER") == "1":
             env["COMMITTED_NO_EAGER"] = "1"
