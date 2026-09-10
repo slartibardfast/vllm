@@ -22,10 +22,11 @@ PROBES = [
 ]
 
 CHILD = r'''
-import json, sys, time
+import json, os as _o, sys, time
 from vllm import LLM, SamplingParams
 model, out_path, k = sys.argv[1], sys.argv[2], int(sys.argv[3])
-kw = dict(model=model, dtype="float16", tensor_parallel_size=1,
+tp = int(_o.environ.get("KSWEEP_TP", "1"))
+kw = dict(model=model, dtype="float16", tensor_parallel_size=tp,
           gpu_memory_utilization=0.90, max_model_len=4096,
           enforce_eager=False, enable_prefix_caching=False)
 if k > 0:
@@ -54,7 +55,9 @@ def run(model, k, tag):
     out = os.path.join(HERE, f"ksweep-{tag}.json")
     env = dict(os.environ)
     env.update({"FLASHINFER_DISABLE_VERSION_CHECK": "1",
-                "CUDA_HOME": "/opt/cuda", "CUDA_VISIBLE_DEVICES": "1"})
+                "CUDA_HOME": "/opt/cuda", })
+    if int(os.environ.get("KSWEEP_TP", "1")) == 1:
+        env["CUDA_VISIBLE_DEVICES"] = "1"
     with open(os.path.join(HERE, f"ksweep-{tag}.log"), "w") as lf:
         c = subprocess.Popen([VENV_PY, "-c", CHILD, model, out,
                               str(k)], stdout=lf, stderr=subprocess.STDOUT,

@@ -242,5 +242,144 @@
     "verdict": "NO_DIFF"
    }
   }
+ },
+ {
+  "started": "2026-09-10T03:51:58",
+  "model": "/opt/models/Intel-Qwen3.6-27B-int4-AutoRound",
+  "pairs": 3,
+  "protocol": "interleaved fresh restarts, gate arm protocol, graphs on (EAGER env flips), winner gate max(5 pct, 3 sigma)",
+  "arm_a": {
+   "label": "bridge-gather",
+   "backend": "BRIDGE_ATTN",
+   "env": {}
+  },
+  "arm_b": {
+   "label": "bridge-paged",
+   "backend": "BRIDGE_ATTN",
+   "env": {
+    "BRIDGE_PAGED_DECODE": "1"
+   }
+  },
+  "restarts": [
+   {
+    "label": "bridge-gather",
+    "pair": 1,
+    "exit": 0,
+    "wall_s": 716.8,
+    "assertions": {
+     "backend": "BRIDGE_ATTN",
+     "kv_tokens": "175,672",
+     "preempted": 0
+    },
+    "rows": {
+     "short_decode": 32.9,
+     "ctx512_decode": 25.9,
+     "ctx2048_decode": 21.7
+    }
+   },
+   {
+    "label": "bridge-paged",
+    "pair": 1,
+    "exit": 0,
+    "wall_s": 483.5,
+    "assertions": {
+     "backend": "BRIDGE_ATTN",
+     "kv_tokens": "175,672",
+     "preempted": 0
+    },
+    "rows": {
+     "short_decode": 215.3,
+     "ctx512_decode": 12.9,
+     "ctx2048_decode": 4.1
+    }
+   },
+   {
+    "label": "bridge-gather",
+    "pair": 2,
+    "exit": 0,
+    "wall_s": 710.1,
+    "assertions": {
+     "backend": "BRIDGE_ATTN",
+     "kv_tokens": "175,672",
+     "preempted": 0
+    },
+    "rows": {
+     "short_decode": 35.9,
+     "ctx512_decode": 23.9,
+     "ctx2048_decode": 20.3
+    }
+   },
+   {
+    "label": "bridge-paged",
+    "pair": 2,
+    "exit": 0,
+    "wall_s": 491.8,
+    "assertions": {
+     "backend": "BRIDGE_ATTN",
+     "kv_tokens": "175,672",
+     "preempted": 0
+    },
+    "rows": {
+     "short_decode": 214.3,
+     "ctx512_decode": 12.9,
+     "ctx2048_decode": 4.1
+    }
+   },
+   {
+    "label": "bridge-gather",
+    "pair": 3,
+    "exit": 0,
+    "wall_s": 722.4,
+    "assertions": {
+     "backend": "BRIDGE_ATTN",
+     "kv_tokens": "175,672",
+     "preempted": 0
+    },
+    "rows": {
+     "short_decode": 33.3,
+     "ctx512_decode": 30.7,
+     "ctx2048_decode": 21.8
+    }
+   },
+   {
+    "label": "bridge-paged",
+    "pair": 3,
+    "exit": 0,
+    "wall_s": 485.4,
+    "assertions": {
+     "backend": "BRIDGE_ATTN",
+     "kv_tokens": "175,672",
+     "preempted": 0
+    },
+    "rows": {
+     "short_decode": 222.3,
+     "ctx512_decode": 12.4,
+     "ctx2048_decode": 4.1
+    }
+   }
+  ],
+  "verdict": {
+   "short_decode": {
+    "a_median": 33.3,
+    "b_median": 215.3,
+    "delta_pct": 546.5,
+    "gate_pct": 26.4,
+    "verdict": "B_WINS"
+   },
+   "ctx512_decode": {
+    "a_median": 25.9,
+    "b_median": 12.9,
+    "delta_pct": -50.2,
+    "gate_pct": 76.0,
+    "verdict": "NO_DIFF"
+   },
+   "ctx2048_decode": {
+    "a_median": 21.7,
+    "b_median": 4.1,
+    "delta_pct": -81.1,
+    "gate_pct": 21.2,
+    "verdict": "A_WINS"
+   }
+  }
  }
 ]

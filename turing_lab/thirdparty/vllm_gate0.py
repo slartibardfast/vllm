@@ -46,7 +46,7 @@ json.dump({"texts": texts, "ids": ids}, open(out_path, "w"))
 ''' % {"probes": PROBES}
 
 
-def run(tag, model, backend):
+def run(tag, model, backend, paged):
     out = os.path.join(HERE, f"gate0-{tag}.json")
     log = os.path.join(HERE, f"gate0-{tag}.log")
     env = dict(os.environ)
@@ -57,7 +57,7 @@ def run(tag, model, backend):
                 # does not leak the toggle - the script owns it)
                 "BRIDGE_BATCHED_GATHER": "0",
                 "BRIDGE_PAGED_DECODE":
-                    ("1" if tag == "cand" else "0")})
+                    ("1" if paged else "0")})
     with open(log, "w") as lf:
         c = subprocess.Popen([VENV_PY, "-c", CHILD, model, out, backend],
                              stdout=lf, stderr=subprocess.STDOUT, env=env)
@@ -70,8 +70,15 @@ def run(tag, model, backend):
 def main():
     model = sys.argv[1]
     backend = sys.argv[2] if len(sys.argv) > 2 else "BRIDGE_ATTN"
-    base, rc0 = run("base", model, backend)
-    cand, rc1 = run("cand", model, backend)
+    # triangulation mode: --cross BACKEND runs base=BACKEND (paged off)
+    # vs cand=backend-with-paged-on when they differ
+    cross = sys.argv[3] if len(sys.argv) > 3 else None
+    if cross:
+        base, rc0 = run("base", model, cross, False)
+        cand, rc1 = run("cand", model, backend, True)
+    else:
+        base, rc0 = run("base", model, backend, False)
+        cand, rc1 = run("cand", model, backend, True)
     report = {"model": model, "backend": backend,
               "base_rc": rc0, "cand_rc": rc1}
     if base and cand:
