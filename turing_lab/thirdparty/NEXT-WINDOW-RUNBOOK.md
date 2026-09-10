@@ -2,6 +2,45 @@
 
 Everything below is turnkey. Order matters. Commands are exact.
 
+# Next-window runbook (refreshed 2026-09-10, post window 4)
+
+NO-WINDOW MODE IS IN FORCE (operator): CPU-advanceable work only.
+GPU-BOUND items queue below; nothing runs them until a window opens.
+
+## CPU-advanceable NOW (no GPU required)
+
+1. Split-KV grid surgery (the headline item): extend
+   turing_lab/bridge/bridge_paged_decode.cu - chunk the KV page walk
+   across grid.z blocks (pages_per_block ~ 8-16), each block emits
+   partial (m, l, o) to a workspace, a combine pass merges. Validate
+   the DESIGN against the oracle contract (q_len 1..4, softcap, GQA);
+   author the code; STANDALONE COMPILE via nvcc (CPU-only:
+   nvcc -arch=sm_75 -c with the venv torch headers - window 4 proved
+   this works without a GPU).
+2. Paged-MTP q_len guard: extend the decode_shaped guard in
+   bridge_attn.py's paged arm from q_len==1 to uniform q_len<=4 (the
+   kernel already supports it; MTP verification steps carry K+1 rows).
+   Code + py_compile only; gate-0 needs GPUs.
+
+## GPU queue for the next window (in order)
+
+0. Preflight (unchanged: turing_lab/thirdparty/preflight_window.sh).
+1. Split-KV oracle battery (the 18-case suite in
+   .weco/c2-paged-decode/oracle.py, extended with long-ctx cases
+   >= 2048 exercising the split path).
+2. Gate-0: paged-split vs triton, 8/8 bar (the triangulation pattern).
+3. Champion A/B: bridge-paged-split vs bridge-gather, 3 pairs, THE
+   ctx2048 ROW IS THE DECIDING ROW (the 4.1-vs-21.7 collapse).
+4. MTP x paged: enable the q_len guard, gate-0, then the K2 arm on
+   the 4B (the proven-compounding shape).
+5. Close-out: ledger, records, clocks, llama-server, pushes.
+
+## Superseded history
+
+The window-2 era content below is superseded (probe/verdict/committed
+runs all delivered; the committed numbers live in
+turing_lab/results/committed-both-card*/). Kept for provenance.
+
 ## Open the window
 
     sudo -n systemctl stop llama-server
