@@ -219,7 +219,7 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
             qlen = (qsl_[1] - qsl_[0]) if n > 0 else 0
             uniform = (n > 0 and qsl_[0] == 0 and all(
                 qsl_[i + 1] - qsl_[i] == qlen for i in range(n))
-                and 1 <= qlen <= 4
+                and qlen == 1
                 and qsl_[n] <= attn_metadata.num_actual_tokens)
             if uniform:
                 import os as _os2

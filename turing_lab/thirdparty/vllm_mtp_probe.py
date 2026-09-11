@@ -50,7 +50,9 @@ import os as _o
 if _o.environ.get("COMMITTED_NO_EAGER") == "1":
     kw["enforce_eager"] = False
 if use_mtp:
-    kw["speculative_config"] = {"method": "mtp", "num_speculative_tokens": 3}
+    kw["speculative_config"] = {"method": "mtp",
+                                "num_speculative_tokens":
+                                    int(__import__("os").environ.get("MTP_K", "3"))}
 llm = LLM(**kw)
 sp = SamplingParams(max_tokens=128, temperature=0.0, ignore_eos=True)
 # warmup
