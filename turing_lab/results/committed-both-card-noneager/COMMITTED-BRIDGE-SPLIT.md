@@ -24,3 +24,15 @@ baseline of 50.1/47.8 at mid/long ctx) remains OPEN - the Phase B
 PAGES_PER_SPLIT sweep targets it. Single-stream mid-ctx is the gap;
 batch short-decode (207 vs 292) and restart stability now lead the
 gather path everywhere.
+
+## Update (2026-09-11): the PPS2 champion committed run
+
+Median of 3 fresh restarts, labels asserted every restart (BRIDGE_ATTN
+engaged, KV 175,672, zero preemptions): ctx512 34.3 (band 9.0 pct),
+ctx2048 34.4 (band 2.6 pct), short 213.5 (band 2.3 pct). Floor ratio
+0.62 both rows (from 0.47-0.49); 0.68-0.72 of the TRITON baseline at
+mid/long ctx, with the PPS1 alternative touching 0.81 at ctx512
+(40.5/40.6). The bridge arc: gather 27.3 -> split 26.3 -> tuned 34.3,
+restart-stable throughout. The doctrine acceptance (bridge >= baseline)
+remains open at ~0.7; the named residual lever is the per-token inner
+loop (4 barriers/token, warp-per-pair scoring).

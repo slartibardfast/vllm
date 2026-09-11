@@ -1,5 +1,5 @@
 {
- "started": "2026-09-10T22:57:42",
+ "started": "2026-09-11T01:31:51",
  "model": "/opt/models/Intel-Qwen3.6-27B-int4-AutoRound",
  "backend": "BRIDGE_ATTN",
  "protocol": "fresh engine per restart; median-of-5 reps in-process; clocks locked 1455; assertions parsed from engine logs",
@@ -8,75 +8,75 @@
   {
    "restart": 1,
    "exit": 0,
-   "wall_s": 459.0,
+   "wall_s": 450.5,
    "assertions": {
     "backend": "BRIDGE_ATTN",
     "kv_tokens": "175,672",
     "preempted_events": 0
    },
    "rows": {
-    "short_decode": 207.0,
-    "ctx512_decode": 27.8,
-    "ctx2048_decode": 27.1
+    "short_decode": 211.7,
+    "ctx512_decode": 34.3,
+    "ctx2048_decode": 34.4
    }
   },
   {
    "restart": 2,
    "exit": 0,
-   "wall_s": 455.5,
+   "wall_s": 461.1,
    "assertions": {
     "backend": "BRIDGE_ATTN",
     "kv_tokens": "175,672",
     "preempted_events": 0
    },
    "rows": {
-    "short_decode": 203.8,
-    "ctx512_decode": 25.8,
-    "ctx2048_decode": 27.6
+    "short_decode": 216.7,
+    "ctx512_decode": 35.9,
+    "ctx2048_decode": 34.4
    }
   },
   {
    "restart": 3,
    "exit": 0,
-   "wall_s": 452.2,
+   "wall_s": 459.4,
    "assertions": {
     "backend": "BRIDGE_ATTN",
     "kv_tokens": "175,672",
     "preempted_events": 0
    },
    "rows": {
-    "short_decode": 207.5,
-    "ctx512_decode": 26.3,
-    "ctx2048_decode": 27.1
+    "short_decode": 213.5,
+    "ctx512_decode": 32.8,
+    "ctx2048_decode": 35.3
    }
   }
  ],
  "verdict": {
   "short_decode": {
-   "median": 207.0,
-   "band_pct": 1.8,
+   "median": 213.5,
+   "band_pct": 2.3,
    "vals": [
-    203.8,
-    207.0,
-    207.5
+    211.7,
+    213.5,
+    216.7
    ]
   },
   "ctx512_decode": {
-   "median": 26.3,
-   "band_pct": 7.6,
+   "median": 34.3,
+   "band_pct": 9.0,
    "vals": [
-    25.8,
-    26.3,
-    27.8
+    32.8,
+    34.3,
+    35.9
    ]
   },
   "ctx2048_decode": {
-   "median": 27.1,
-   "band_pct": 1.8,
+   "median": 34.4,
+   "band_pct": 2.6,
    "vals": [
-    27.1,
-    27.1,
-    27.6
+    34.4,
+    34.4,
+    35.3
    ]
   }
  },
@@ -86,5 +86,5 @@
   ],
   "preempted_events_total": 0
  },
- "floor_ratio_ctx512": 0.475
+ "floor_ratio_ctx512": 0.619
 }
