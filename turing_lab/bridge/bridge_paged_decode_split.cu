@@ -28,7 +28,9 @@
 #define NTHREADS 256
 #define NWARP (NTHREADS / 32)
 #define MAX_SPLITS 16
+#ifndef PAGES_PER_SPLIT
 #define PAGES_PER_SPLIT 8
+#endif
 
 // phase 1: partial walk. grid = (reqs, h_kv, splits)
 __global__ void bridge_paged_split_walk_kernel(

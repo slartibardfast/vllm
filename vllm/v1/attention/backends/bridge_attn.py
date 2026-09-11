@@ -235,7 +235,10 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
                             ("bridge_paged_decode_split.cu"
                              if use_split
                              else "bridge_paged_decode.cu"))],
-                        extra_cuda_cflags=["-arch=sm_75", "-O3"],
+                        extra_cuda_cflags=[
+                            "-arch=sm_75", "-O3",
+                            "-DPAGES_PER_SPLIT=" + _os2.environ.get(
+                                "BRIDGE_PPS", "8")],
                         verbose=False)
                 q_rows = query[:n * qlen].view(
                     n, self.num_heads, qlen, self.head_size)
