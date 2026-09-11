@@ -65,3 +65,20 @@ mid-ctx alternative. The walk-parallelism lever is exhausted at
 ~40/36 vs the baseline's 50.1/47.8 - the residual ~20 pct lives in
 the per-token inner loop (4 barriers/token, warp-per-pair scoring),
 a deeper lever recorded for future surgery.
+
+## MTP x paged root-cause trail (2026-09-11, Phase D)
+
+Three discriminators, isolated traffic class: (1) qlen==1-only paged +
+MTP = 4/5 clean canaries, real 1.52x speedup - the draft phase is
+innocent; (2) K=1 (minimal verify, qlen=2) = 0/5 - depth is not the
+variable; (3) metadata dump: ordinary prefills arrive as ONE large
+chunk (qlen > 4, falls to loop) while MTP's chunks are the ONLY
+multi-row-paged traffic (qlen 2-5). Conclusion: MULTI-ROW PAGED
+(qlen 2-4) is red, period - and the oracle cannot see it (its
+fully-written page model matches the kernel's assumptions; the
+engine's real cache state during those steps does not - framework
+interplay, likely cache-write ordering or slot state at verify).
+DISPOSITION: MTP serves on gather (proven 5/5, 1.75x/2.12x); the
+combination stays disabled; the root-cause re-opens with the
+narrowed frame (multi-row, K-independent, oracle-blind) next window.
+The convergence run proceeds on the proven arms.
