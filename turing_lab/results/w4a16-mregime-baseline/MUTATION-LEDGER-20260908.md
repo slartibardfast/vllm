@@ -20,3 +20,20 @@ is not reachable by config knobs at this granularity - the corpus's
 named surgery (3+ stage pipeline, register-resident dequant with the
 repack interlace) is the remaining path, and the knob space around the
 current optimum is now mapped.
+
+## Phase C addendum (2026-09-11, 72h window): the pipeline thesis falsified twice
+
+k_opt3 (true 2-buffer software pipeline, authored clean, oracle-green):
+concurrent-smem-write variant 16.66 (-29 pct vs opt2's 23.50);
+post-compute-staging + L2-prefetch variant 15.13 (-36 pct). Three
+structures triangulate the mechanism: the mma stream at this tile
+shape (64x128x32) is SMEM-BANDWIDTH-BOUND, not latency-starved -
+opt2's synchronous barrier separation IS the optimization; any
+concurrent staging traffic or added barrier is pure loss. The corpus's
+"deeper software pipeline" lever is falsified in this direction on
+this silicon. The surviving path to 51-57: register-resident dequant
+with the repack interlace (removes the weight stream from smem
+entirely; days-grade surgery - host repack tooling + kernel rewrite),
+scoped for a dedicated window. Phase C pivots to the bounded
+alternates (INT8 probe, local loops); the code is retained in the
+task dir for the record.
