@@ -2,6 +2,45 @@
 
 Everything below is turnkey. Order matters. Commands are exact.
 
+# PLATEAU SESSION queue (refreshed 2026-09-12)
+
+The exit contract (DOCTRINE.md D1): drain this queue in order; close at
+queue exhaustion or the operator's word, never at a phase boundary.
+GPU blocks are the spine; CPU work (campaign-runner, weco-cli PR)
+fills the waits inside GPU blocks. Clocks: lock 1455 both cards before
+item 1, reset at close. Explicitly OUT of this session's queue: the
+register-dequant+repack W4A16 surgery (days-grade, own window) and the
+weco-skill pin bump (blocked on the operator's push of 90f531c).
+
+1. PREFLIGHT — `bash turing_lab/thirdparty/preflight_window.sh`;
+   all OK required.
+2. MULTI-ROW PAGED ROOT-CAUSE — the MTP x paged RED class is narrowed:
+   multi-row paged, K-independent, oracle-blind (engine cache-state
+   interplay). Instrument the paged arm for multi-row traffic (dump
+   page tables + cache state at the failing step), then gate-0.
+   Verify: BRIDGE_PAGED_DECODE=1 serves MTP verification rows 5/5
+   greedy, OR a written mechanism diagnosis with the discriminating
+   evidence named.
+3. K1/K2 CHAMPION-PATH SWEEP — MTP K in {1,2} with decode on
+   paged-split PPS2, verify/prefill gather, graphs, 27B (K3 done:
+   1.12x/1.07x). Verify: greedy-lossless canaries, medians-of-3,
+   ab-ledger append with intent fields.
+4. PER-TOKEN INNER LOOP — the named residual (34.3 vs the 50.1 TRITON
+   baseline). Profile the split kernel's decode loop, one surgery at a
+   time through the gates. Verify: oracle 36/36 after each step; A/B
+   vs champion PPS2; the champion changes only through the ledger.
+5. INT8 PROBE — quantize a fixture at W8A8 (autoround recipe, the
+   fixture-reproduction pattern below), eval vs the W4A16 incumbent
+   on the identical rows. Verify: the committed-run protocol
+   (medians-of-3, labels, zero preemptions).
+6. WECO-CLI PR — plan Part 4 (CPU): local resume, --eval-timeout,
+   harness-failure continue-with-retry, citing the campaign-runner.
+7. CLOSE-OUT — ledger, records, runbook status line, clocks reset
+   (`sudo -n nvidia-smi -rgc -i 0; sudo -n nvidia-smi -rgc -i 1`),
+   `sudo -n systemctl start llama-server`, lane + outer commits and
+   pushes, pin bump.
+
+
 # Next-window runbook (refreshed 2026-09-10, post window 4)
 
 NO-WINDOW MODE IS IN FORCE (operator): CPU-advanceable work only.
