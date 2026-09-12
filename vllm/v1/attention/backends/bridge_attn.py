@@ -187,6 +187,74 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
         kv_cache[b_idx, :, o_idx, :hs] = key
         kv_cache[b_idx, :, o_idx, hs:] = value
 
+    def _paged_dual_diff(self, qlen, n, query, kv_cache, attn_metadata,
+                         out_p):
+        # plan/0008 root-cause instrumentation: the gather+fa reference on
+        # the same live verify-step inputs, diffed per row against the
+        # paged kernel. Env-gated (BRIDGE_PAGED_DUAL=1); one JSON line
+        # per call to BRIDGE_PAGED_DUAL_LOG when set.
+        import json as _json
+        import os as _os
+        block_table = attn_metadata.block_table
+        block_size = kv_cache.shape[2]
+        sl_cpu = [int(x) for x in attn_metadata.seq_lens_cpu[:n]]
+        sl_dev = [int(x) for x in attn_metadata.seq_lens[:n].tolist()]
+        rows = []
+        for i in range(n):
+            seq_len = sl_cpu[i]
+            if seq_len <= 0:
+                rows.append([0.0] * qlen)
+                continue
+            n_pages = (seq_len + block_size - 1) // block_size
+            pages = block_table[i, :n_pages]
+            k_rows, v_rows = self._gather_kv(kv_cache, pages)
+            out_g = self._flash_attn_func(
+                query[i * qlen:(i + 1) * qlen].unsqueeze(0),
+                k_rows[:seq_len].unsqueeze(0),
+                v_rows[:seq_len].unsqueeze(0), softmax_scale=self.scale,
+                causal=True).squeeze(0)
+            d = (out_p[i].transpose(0, 1).float()
+                 - out_g.float()).abs().amax(dim=-1).amax(dim=-1)
+            rows.append([round(x, 4) for x in d.tolist()])
+        worst = max((max(r) for r in rows if r), default=0.0)
+        rec = {"qlen": qlen, "n": n,
+               "num_actual": attn_metadata.num_actual_tokens,
+               "sl_cpu": sl_cpu[:8], "sl_dev": sl_dev[:8],
+               "worst": worst, "rowdiffs": rows[:8]}
+        dump = _os.environ.get("BRIDGE_PAGED_DUMP")
+        if dump and worst > 2e-2 and not hasattr(self, "_dumped"):
+            self._dumped = True
+            i = max(range(n), key=lambda j: max(rows[j]) if rows[j] else 0)
+            n_pages = (sl_cpu[i] + block_size - 1) // block_size
+            _torch = __import__("torch")
+            _torch.save({
+                "q_raw": query.detach().cpu(),
+                "req": i, "qlen": qlen,
+                "out_p": out_p.detach().cpu(),
+                "kv": kv_cache.detach().cpu(),
+                "bt": block_table.detach().cpu(),
+                "sl": sl_cpu[i],
+                "scale": self.scale,
+                "h_q": self.num_heads, "h_kv": kv_cache.shape[1],
+                "block_size": block_size,
+            }, dump)
+        if worst > 2e-2:
+            i = max(range(n), key=lambda j: max(rows[j]) if rows[j] else 0)
+            seq_len = sl_cpu[i]
+            n_pages = (seq_len + block_size - 1) // block_size
+            pages = block_table[i, :n_pages]
+            k_rows, _ = self._gather_kv(kv_cache, pages)
+            rec["tail_knorm"] = [
+                round(k_rows[min(p, seq_len - 1), 0].float().norm().item(),
+                      3)
+                for p in range(max(0, seq_len - qlen), seq_len)]
+            rec["head_knorm"] = round(
+                k_rows[0, 0].float().norm().item(), 3)
+        path = _os.environ.get("BRIDGE_PAGED_DUAL_LOG")
+        if path:
+            with open(path, "a") as f:
+                f.write(_json.dumps(rec) + "\n")
+
     def forward(
         self,
         layer: AttentionLayer,
@@ -211,7 +279,13 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
         # exactly one query row); chunked prefill falls to the loop.
         import os as _os
         _paged_mode = _os.environ.get("BRIDGE_PAGED_DECODE", "0")
-        if _paged_mode in ("1", "split"):
+        # BRIDGE_PAGED_DUAL widens the guard to the MTP verification shape
+        # (uniform q_len 1..4) and runs a gather reference beside the paged
+        # kernel on the same live inputs, diffing per row (plan/0008
+        # root-cause instrumentation; default behaviour is unchanged).
+        _dual = (_os.environ.get("BRIDGE_PAGED_DUAL") == "1"
+                 and _paged_mode in ("1", "split"))
+        if _paged_mode in ("1", "split") or _dual:
             qsl_ = attn_metadata.query_start_loc_cpu
             n = attn_metadata.num_reqs
             # MTP verification steps carry a uniform K+1 query rows per
@@ -219,7 +293,7 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
             qlen = (qsl_[1] - qsl_[0]) if n > 0 else 0
             uniform = (n > 0 and qsl_[0] == 0 and all(
                 qsl_[i + 1] - qsl_[i] == qlen for i in range(n))
-                and qlen == 1
+                and (qlen == 1 or (_dual and 1 <= qlen <= 4))
                 and qsl_[n] <= attn_metadata.num_actual_tokens)
             if uniform:
                 import os as _os2
@@ -240,17 +314,28 @@ class BridgeAttentionImpl(AttentionImpl[BridgeAttentionMetadata]):
                             "-DPAGES_PER_SPLIT=" + _os2.environ.get(
                                 "BRIDGE_PPS", "8")],
                         verbose=False)
+                # engine query rows are token-major (req, row, head, d);
+                # the kernel's contract is (req, head, row, d) — repack,
+                # never flat-view (a raw view scrambles q for q_len > 1,
+                # the plan/0008 multi-row red)
                 q_rows = query[:n * qlen].view(
-                    n, self.num_heads, qlen, self.head_size)
+                    n, qlen, self.num_heads,
+                    self.head_size).transpose(1, 2).contiguous()
                 fn = (self._paged.bridge_paged_decode_split
                       if use_split else self._paged.bridge_paged_decode)
                 out_p = fn(
                     q_rows, kv_cache, attn_metadata.block_table,
                     attn_metadata.seq_lens[:n].to(torch.int32),
                     self.scale, 0.0)
+                if _dual and qlen > 1:
+                    self._paged_dual_diff(
+                        qlen, n, query, kv_cache, attn_metadata, out_p)
+                # kernel layout is (req, head, q_row, d); rows must be
+                # regrouped to (req, q_row, head, d), never re-viewed (a
+                # flat view scrambles rows for any q_len > 1)
                 output[:n * qlen].copy_(
-                    out_p.view(n * qlen, self.num_heads,
-                               self.head_size))
+                    out_p.transpose(1, 2).reshape(
+                        n * qlen, self.num_heads, self.head_size))
                 return output
 
         global _route_logged
