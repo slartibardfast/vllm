@@ -141,3 +141,33 @@ The convergence run proceeds on the proven arms.
   pre/post under .weco/c2-paged-decode/profile-*; intent:
   question=inner-loop residual, mechanism=register accumulators +
   warp-uniform softmax, disposition=champion.
+
+## half2 staging surgery (2026-09-13, plan/0009) — NO_DIFF in-engine, champion unchanged
+
+- question: PROFILE-DELTA's named bandwidth lever — does restaging
+  K/V as __half2 on a lane-owns-pairs remap (removing the 2-way smem
+  bank split of the scalar lane+32*ii pattern, halving the staging
+  instruction count) move the champion rows?
+- gates: nvcc clean; oracle 36/36 at PPS2 (std + long-ctx); gate-0
+  triangulation vs TRITON cross-base 8/8 exact, zero token diffs;
+  committed A/B medians-of-3 fresh restarts, graphs, labels asserted,
+  zero preemptions.
+- isolated (oracle harness, TP2 per-rank shapes): short-shape kernel
+  80.6 -> 67.6 us (minus 16 pct vs incumbent); long-shape 670.4 ->
+  609.7 us (minus 9 pct). Versus the pre-surgery kernel: 3.6x/4.4x.
+- VERDICT: NO_DIFF in-engine. A/B 193.1/41.9/39.8 vs same-day
+  incumbent baseline 195.5/41.6/40.2 — every row inside overlapping
+  bands; short not recovered, mid/long held. The champion does NOT
+  move (champion moves only on a WIN).
+- mechanism: engine sensitivity floor. The register surgery moved
+  the rows because it cut ~2 ms per walk launch (~16 ms/step at
+  8 full-attn layers); half2 cuts ~13-60 us per launch (~0.1-0.5
+  ms/step) — under the band. The kernel patch is preserved at
+  results/short-row-recovery/half2-kernel.patch (strictly better in
+  isolation, bank-conflict-free by construction), re-adoptable if a
+  future lever reopens the smem path.
+- provenance: working tree reverted to the incumbent champion after
+  the A/B; extension cache cleared so subsequent engines rebuild the
+  ledger champion. intent: question=bandwidth lever one (half2
+  staging), mechanism=lane+32*j half2 remap, disposition=falsified-
+  as-engine-mover (isolated win recorded).

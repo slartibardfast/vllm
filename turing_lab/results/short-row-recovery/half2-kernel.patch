@@ -1,0 +1,147 @@
+diff --git a/turing_lab/bridge/bridge_paged_decode_split.cu b/turing_lab/bridge/bridge_paged_decode_split.cu
+index 203bd14108..8c78d2f9e1 100644
+--- a/turing_lab/bridge/bridge_paged_decode_split.cu
++++ b/turing_lab/bridge/bridge_paged_decode_split.cu
+@@ -39,6 +39,12 @@
+ // showed driving L1/smem to 84 pct with 11 of 32 lanes active and
+ // 30 pct barrier stalls. Staging is one sync pair per token; softmax
+ // state is warp-uniform (score broadcast from lane 0).
++// plan/0009 half2 surgery: every K/V access is __half2 on the
++// lane-owns-pairs remap (lane l holds half2 indices l + 32*j), which
++// removes the 2-way smem bank split of the scalar lane+32*ii pattern
++// (two adjacent lanes shared every 4-byte bank) and halves the
++// staging instruction count (one 32-bit copy per thread instead of
++// two 16-bit). Layout contract with the combine kernel is unchanged.
+ __global__ void bridge_paged_split_walk_kernel(
+     const __half* __restrict__ q, const __half* __restrict__ kv_cache,
+     const int* __restrict__ block_table, const int* __restrict__ seq_lens,
+@@ -58,20 +64,24 @@ __global__ void bridge_paged_split_walk_kernel(
+   const int p_end = min(n_pages, p_begin + pages_per_split);
+   const int tid = threadIdx.x;
+   const int warp = tid >> 5, lane = tid & 31;
+-  const int DD = d >> 5;                       // dims per lane (d=256 -> 8)
++  const int DD2 = d >> 6;                      // half2 per lane (d=256 -> 4)
+   const int ppw = (npair + NWARP - 1) / NWARP; // pairs per warp (<= 3)
+ 
+   const __half* qbase = q + ((long)req * h_q + (long)kvh * g) * q_len * d;
+ 
+-  float qreg[3][8];  // qreg[p][ii] pairs with sK[lane + 32*ii]
+-  float acc[3][8];
++  // half2 remap: lane l owns dims 2*(l + 32*j) and 2*(l + 32*j) + 1
++  float2 qreg2[3][4];
++  float2 acc2[3][4];
+   float m_run[3], l_run[3];
+   #pragma unroll
+   for (int p = 0; p < 3; p++) {
+     m_run[p] = -INFINITY;
+     l_run[p] = 0.f;
+     #pragma unroll
+-    for (int ii = 0; ii < 8; ii++) { qreg[p][ii] = 0.f; acc[p][ii] = 0.f; }
++    for (int j = 0; j < 4; j++) {
++      qreg2[p][j] = make_float2(0.f, 0.f);
++      acc2[p][j] = make_float2(0.f, 0.f);
++    }
+   }
+   #pragma unroll
+   for (int p = 0; p < 3; p++) {
+@@ -79,14 +89,20 @@ __global__ void bridge_paged_split_walk_kernel(
+     if (pair < npair) {
+       const int qr = pair / g, hl = pair % g;
+       const __half* qrow = qbase + ((long)hl * q_len + qr) * d;
+-      for (int ii = 0; ii < DD; ii++)
+-        qreg[p][ii] = __half2float(qrow[lane + 32 * ii]);
++      const __half2* qrow2 = reinterpret_cast<const __half2*>(qrow);
++      #pragma unroll
++      for (int j = 0; j < 4; j++)
++        if (j < DD2)
++          qreg2[p][j] = __half22float2(qrow2[lane + 32 * j]);
+     }
+   }
+ 
+   extern __shared__ __half smem[];  // sK (d) + sV (d) staging only
+   __half* sK = smem;
+   __half* sV = sK + d;
++  __half2* sK2 = reinterpret_cast<__half2*>(sK);
++  __half2* sV2 = reinterpret_cast<__half2*>(sV);
++  const int d2 = d >> 1;  // half2 elements per row (128)
+ 
+   for (int pg = p_begin; pg < p_end; pg++) {
+     const int b_id = block_table[req * max_pages + pg];
+@@ -95,11 +111,15 @@ __global__ void bridge_paged_split_walk_kernel(
+     for (int t = 0; t < block_size; t++) {
+       const int pos = tok0 + t;
+       if (pos >= seq_len) break;
+-      const __half* krow = page + (long)t * st;
++      const __half2* krow2 =
++          reinterpret_cast<const __half2*>(page + (long)t * st);
+       __syncthreads();
+-      for (int e = tid; e < d; e += NTHREADS) {
+-        sK[e] = krow[e];
+-        sV[e] = krow[e + d];
++      // warps 0..3 stage K, warps 4..7 stage V: one 32-bit global load
++      // and one 32-bit smem store per thread, both bank-conflict-free
++      if (tid < d2) {
++        sK2[tid] = krow2[tid];
++      } else if (tid < 2 * d2) {
++        sV2[tid - d2] = krow2[tid];
+       }
+       __syncthreads();
+       for (int p = 0; p < ppw; p++) {
+@@ -109,9 +129,12 @@ __global__ void bridge_paged_split_walk_kernel(
+         if (pos > seq_len - q_len + qr) continue;  // masked: warp-uniform
+         float part = 0.f;
+         #pragma unroll
+-        for (int ii = 0; ii < 8; ii++)
+-          if (ii < DD)
+-            part += qreg[p][ii] * __half2float(sK[lane + 32 * ii]);
++        for (int j = 0; j < 4; j++) {
++          if (j < DD2) {
++            const float2 kk = __half22float2(sK2[lane + 32 * j]);
++            part += qreg2[p][j].x * kk.x + qreg2[p][j].y * kk.y;
++          }
++        }
+         #pragma unroll
+         for (int off = 16; off > 0; off >>= 1)
+           part += __shfl_down_sync(0xffffffffu, part, off);
+@@ -126,11 +149,18 @@ __global__ void bridge_paged_split_walk_kernel(
+         m_run[p] = m_new;
+         l_run[p] = l_run[p] * alpha + w;
+         #pragma unroll
+-        for (int ii = 0; ii < 8; ii++)
+-          if (ii < DD) acc[p][ii] *= alpha;
++        for (int j = 0; j < 4; j++)
++          if (j < DD2) {
++            acc2[p][j].x *= alpha;
++            acc2[p][j].y *= alpha;
++          }
+         #pragma unroll
+-        for (int ii = 0; ii < 8; ii++)
+-          if (ii < DD) acc[p][ii] += w * __half2float(sV[lane + 32 * ii]);
++        for (int j = 0; j < 4; j++)
++          if (j < DD2) {
++            const float2 vv = __half22float2(sV2[lane + 32 * j]);
++            acc2[p][j].x += w * vv.x;
++            acc2[p][j].y += w * vv.y;
++          }
+       }
+     }
+   }
+@@ -147,10 +177,14 @@ __global__ void bridge_paged_split_walk_kernel(
+     const int pair = warp + p * NWARP;
+     if (pair >= npair) continue;
+     if (lane == 0) { wm[pair] = m_run[p]; wl[pair] = l_run[p]; }
+-    for (int ii = 0; ii < DD; ii++) {
+-      const int e = lane + 32 * ii;
+-      wo[(long)pair * d + e] =
+-          (l_run[p] > 0.f) ? acc[p][ii] / l_run[p] : 0.f;
++    #pragma unroll
++    for (int j = 0; j < 4; j++) {
++      if (j < DD2) {
++        const int e = 2 * (lane + 32 * j);
++        const float inv = (l_run[p] > 0.f) ? 1.f / l_run[p] : 0.f;
++        wo[(long)pair * d + e] = acc2[p][j].x * inv;
++        wo[(long)pair * d + e + 1] = acc2[p][j].y * inv;
++      }
+     }
+   }
+ }
