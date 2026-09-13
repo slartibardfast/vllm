@@ -4,6 +4,13 @@ Everything below is turnkey. Order matters. Commands are exact.
 
 # The working queue lives in the plan room, not here
 
+STATUS (2026-09-13, plateau session closed): plan/0008 drained 8/8.
+Highlights: multi-row paged red root-caused (q-layout view) and fixed;
+MTP K-tree on the 27B = no compound at any K; the register-accumulator
+surgery is the NEW STANDING CHAMPION at 41.3/41.2/195.5 (floor 0.75,
+0.82 of the TRITON baseline); int8 probed to a loader gap (fixture
+banked). Everything below is lane reference material.
+
 The plateau session's queue moved to
 [plan/0008](plan/0008-campaign-plateau/README.md) (2026-09-12): the
 task machinery reads plan READMEs, so the queue is a receipted build
