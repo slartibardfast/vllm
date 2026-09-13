@@ -23,3 +23,26 @@
   closes the loader gap can measure the headroom question directly.
   The W4A16 incumbent (51-57 tok/s short / 41.3 champion-path bridge)
   stands.
+
+## Correction (2026-09-13, plan/0009 #int8-loader): the fixture was never int8
+
+Re-examined the banked checkpoint against the export path. The
+index holds only orig_layer.weight tensors for every language linear
+and the safetensors headers read BF16 (sampled q_proj and gate_proj);
+no weight_scale, no zero-point, nothing quantized exists anywhere in
+the file. With activation quant, autoround 0.15.0's auto_round format
+exports the triton-act wrapper IR (export/export_to_autoround/
+export.py: act_bits <= 8 routes to pack_qact_layer, whose QuantLinear
+comes from auto_round_extension, a runtime this stack does not have)
+and what save_pretrained captured is the wrapper's bf16 original.
+The tuning itself (248/347 layers) never left the process.
+
+So the orig_layer AttributeError was wrapper naming reaching the
+weight walker, not a qwen3_5 loader gap, and the "quantize YES /
+load NO" split above was wrong at its root: there was nothing
+quantized to load. Disposition updated: the fix is export-side.
+requantize_llmcompressor.sh (beside this verdict) re-runs the
+fixture-grade recipe with --format llm_compressor, which packs int8
+weights, group scales and activation scales as compressed-tensors
+that vLLM loads natively (no model-file patch). The headroom
+measurement (plan/0009 #int8-headroom) runs against that export.
