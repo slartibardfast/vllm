@@ -171,3 +171,52 @@ The convergence run proceeds on the proven arms.
   ledger champion. intent: question=bandwidth lever one (half2
   staging), mechanism=lane+32*j half2 remap, disposition=falsified-
   as-engine-mover (isolated win recorded).
+
+## MTP K-tree on the 4B CHAMPION path (2026-09-13, plan/0009) — GREEN, deeply negative — the family question closed
+
+- question: does the 4B's stock-path compounding (1.84/2.12/1.62/1.53
+  at K1..4, TP2, graphs) transfer to the champion configuration
+  (decode paged-split PPS2, verify/prefill gather)?
+- config: Qwen3.5-4B W4A16 fixture, TP2, CUDA graphs, BRIDGE_ATTN
+  with the paged-split decode arm, 3 fresh restarts, medians
+  (results/mtp-4b-champion/summary.json).
+- K1 0.53/0.74; K2 0.44/0.70; K3 0.59/0.73; K4 0.91/0.84 (ctx512 /
+  ctx2048 speedup medians). Base mixed medians 176.9/73.9.
+- greedy: 3/3 lossless on every rep at every K.
+- VERDICT: NO COMPOUND, and worse - every depth is deeply NEGATIVE on
+  the champion path, a stronger penalty than the 27B's (0.86-1.12).
+  Mechanism (recorded hypothesis): the champion decode arm is much
+  faster per step than stock on this fixture (base 176.9 vs the
+  stock-path class), so the MTP draft-and-verify overhead (draft
+  passes + gather-arm verify rows) has a far higher relative price;
+  the stock path's compounding was partly buying back launch overhead
+  the champion path no longer pays. The 4B deployment shape stays on
+  its measured STOCK-path numbers; MTP x champion is dead for the
+  family, not just the 27B.
+- provenance: lane this commit; intent: question=4B-family MTP
+  transfer, mechanism=champion-config K-tree on the fixture,
+  disposition=closed-negative.
+
+## K1 inversion settled (2026-09-13, plan/0009) — REAL: stock-K1 exceeds champion-K1
+
+- question: the champion-path K-tree's single-rep side observation -
+  the stock backend's K1 speedups exceeded the champion path's, the
+  inverse of the deepest-K ordering. Replicate at the standing
+  protocol.
+- config: 27B, TP2, graphs; stock arm = TRITON backend, base + K1,
+  3 fresh restarts (results/k1-inversion/summary.json); champion-K1
+  medians banked from the plan/0008 K-tree (3 reps each).
+- stock-K1 speedup medians: 1.32 ctx512 / 1.13 ctx2048 (vals
+  1.27-1.42 / 1.08-1.21) vs champion-K1 banked 1.06 / 0.87. Greedy
+  3/3 on every rep.
+- VERDICT: the inversion is REAL and material (plus 25 pct at ctx512,
+  plus 26 pct at ctx2048 over the champion path's K1). Recorded
+  mechanism (hypothesis, consistent with the 4B K-tree the same
+  window): MTP buys back launch/step overhead the champion path no
+  longer pays, while the draft-and-verify machinery prices higher
+  against the champion's faster decode steps. Net: spec decode
+  favors the STOCK path on this engine at every measured scale -
+  the champion deployment stays no-MTP.
+- provenance: lane this commit; intent: question=K1-ordering
+  inversion, mechanism=stock-K1 3-rep replication, disposition=
+  confirmed-inversion.
