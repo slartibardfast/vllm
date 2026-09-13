@@ -220,3 +220,33 @@ The convergence run proceeds on the proven arms.
 - provenance: lane this commit; intent: question=K1-ordering
   inversion, mechanism=stock-K1 3-rep replication, disposition=
   confirmed-inversion.
+
+## KV read pipelining surgery (2026-09-13, plan/0009) — NEGATIVE, falsified
+
+- question: PROFILE-DELTA's second named bandwidth lever - explicit
+  register prefetch of the next token's K/V row overlapped with the
+  current token's compute, double-buffered staging, one sync per
+  token (from two).
+- gates: nvcc clean (after fixing the int-to-half init the torch
+  build rejected); oracle 36/36 at PPS2 (std + long-ctx); gate-0
+  6/8 with the dual-arm adjudication (see
+  results/kv-pipelining/GATE0-ADJUDICATION.md: mean worst-row diff
+  0.004, max 0.0625, the fp16 tie-break class - nvcc's FMA
+  contraction moved with the new register schedule); committed A/B
+  medians-of-3.
+- VERDICT: NEGATIVE. A/B 186.7/36.8/39.5 vs the same-day incumbent
+  baseline 195.5/41.6/40.2: ctx512 -11.5 pct at band 0.3 (decisive,
+  bands do not overlap), short -4.5 pct (186.7 vs 195.5, just
+  outside), ctx2048 -1.7 pct (overlapping). The prefetch registers
+  and doubled staging buffers cost more at the mid-ctx shape than
+  the latency hiding buys. The champion does NOT move; the working
+  tree reverted; patch preserved at
+  results/kv-pipelining/pipelining-kernel.patch.
+- standing after both bandwidth levers: the split walk kernel's
+  named lever list from PROFILE-DELTA is now exhausted (half2
+  NO_DIFF, pipelining NEGATIVE) - the champion 41.3/41.2/195.5 class
+  stands as this kernel generation's engine-measured optimum on
+  this silicon.
+- provenance: lane this commit; intent: question=bandwidth lever
+  two (KV read pipelining), mechanism=register prefetch +
+  double-buffer, disposition=falsified-negative.

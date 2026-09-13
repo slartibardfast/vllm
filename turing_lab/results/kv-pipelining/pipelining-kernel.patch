@@ -1,0 +1,85 @@
+diff --git a/turing_lab/bridge/bridge_paged_decode_split.cu b/turing_lab/bridge/bridge_paged_decode_split.cu
+index 203bd14108..b341af32d1 100644
+--- a/turing_lab/bridge/bridge_paged_decode_split.cu
++++ b/turing_lab/bridge/bridge_paged_decode_split.cu
+@@ -84,24 +84,40 @@ __global__ void bridge_paged_split_walk_kernel(
+     }
+   }
+ 
+-  extern __shared__ __half smem[];  // sK (d) + sV (d) staging only
+-  __half* sK = smem;
+-  __half* sV = sK + d;
++  extern __shared__ __half smem[];  // double-buffered staging:
++  // sK0/sK1/sV0/sV1 (plan/0009 pipelining: the next token's row is
++  // prefetched into registers while the current token computes, then
++  // stored to the other buffer - one sync per token, global-load
++  // latency overlapped with the QK/V math; Turing has no async copy,
++  // the prefetch is plain loads issued into registers)
++  __half* sKb[2] = {smem, smem + d};
++  __half* sVb[2] = {smem + 2 * d, smem + 3 * d};
+ 
+   for (int pg = p_begin; pg < p_end; pg++) {
+     const int b_id = block_table[req * max_pages + pg];
+     const __half* page = kv_cache + (long)b_id * sb + (long)kvh * sh;
+     const int tok0 = pg * block_size;
++    if (tok0 >= seq_len) break;
++    // prologue: stage this page's first token
++    for (int e = tid; e < d; e += NTHREADS) {
++      sKb[0][e] = page[e];
++      sVb[0][e] = page[e + d];
++    }
++    __syncthreads();
+     for (int t = 0; t < block_size; t++) {
+       const int pos = tok0 + t;
+       if (pos >= seq_len) break;
+-      const __half* krow = page + (long)t * st;
+-      __syncthreads();
+-      for (int e = tid; e < d; e += NTHREADS) {
+-        sK[e] = krow[e];
+-        sV[e] = krow[e + d];
++      // prefetch the next token of THIS page (guarded: only tokens
++      // the causal walk will process; loads stay inside the page)
++      const bool has_next = (t + 1 < block_size) && (pos + 1 < seq_len);
++      __half pf_k = __float2half(0.f), pf_v = __float2half(0.f);
++      if (has_next) {
++        const __half* krow_next = page + (long)(t + 1) * st;
++        pf_k = krow_next[tid];
++        pf_v = krow_next[tid + d];
+       }
+-      __syncthreads();
++      const __half* sK = sKb[t & 1];
++      const __half* sV = sVb[t & 1];
+       for (int p = 0; p < ppw; p++) {
+         const int pair = warp + p * NWARP;
+         if (pair >= npair) continue;
+@@ -132,6 +148,13 @@ __global__ void bridge_paged_split_walk_kernel(
+         for (int ii = 0; ii < 8; ii++)
+           if (ii < DD) acc[p][ii] += w * __half2float(sV[lane + 32 * ii]);
+       }
++      if (has_next) {
++        __half* sKn = sKb[(t + 1) & 1];
++        __half* sVn = sVb[(t + 1) & 1];
++        sKn[tid] = pf_k;
++        sVn[tid] = pf_v;
++      }
++      __syncthreads();
+     }
+   }
+ 
+@@ -245,10 +268,12 @@ torch::Tensor bridge_paged_decode_split(
+                            opts.dtype(torch::kFloat));
+   auto out = torch::empty_like(q);
+   dim3 grid(num_reqs, h_kv, splits);
+-  // register-accumulator surgery: staging only (sK + sV), the sm_o /
+-  // sm_m / sm_l / sm_alive smem is gone; occupancy is no longer
+-  // smem-limited (was 2 CTAs per SM)
+-  size_t smem = (size_t)d * 2 * sizeof(__half);
++  // register-accumulator surgery: staging only, the sm_o / sm_m /
++  // sm_l / sm_alive smem is gone; occupancy is no longer smem-limited
++  // (was 2 CTAs per SM). plan/0009 pipelining doubles the staging
++  // (sK0/sK1/sV0/sV1) so the next token's loads overlap this token's
++  // compute.
++  size_t smem = (size_t)d * 4 * sizeof(__half);
+   TORCH_CHECK(smem <= 48 * 1024, "smem over the static budget");
+   auto stream = at::cuda::getCurrentCUDAStream();
+   bridge_paged_split_walk_kernel<<<grid, NTHREADS, smem, stream>>>(
