@@ -1,0 +1,33 @@
+{
+ "model": "/opt/models/Intel-Qwen3.6-27B-int4-AutoRound",
+ "base_rc": 0,
+ "mtp_rc": 0,
+ "greedy_match": "4/5",
+ "canary_rep4_base": [
+  0.0,
+  0.044,
+  0.013,
+  0.0,
+  0.0
+ ],
+ "canary_rep4_mtp": [
+  0.0,
+  0.044,
+  0.013,
+  0.0,
+  0.0
+ ],
+ "mixed_tok_s_base": {
+  "512": 23.4,
+  "2048": 13.2
+ },
+ "mixed_tok_s_mtp": {
+  "512": 26.7,
+  "2048": 11.5
+ },
+ "speedup": {
+  "512": 1.14,
+  "2048": 0.87
+ },
+ "acceptance_logged": []
+}

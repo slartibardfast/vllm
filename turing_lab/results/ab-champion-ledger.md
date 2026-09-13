@@ -82,3 +82,32 @@ DISPOSITION: MTP serves on gather (proven 5/5, 1.75x/2.12x); the
 combination stays disabled; the root-cause re-opens with the
 narrowed frame (multi-row, K-independent, oracle-blind) next window.
 The convergence run proceeds on the proven arms.
+
+## MTP K-tree on the champion path (2026-09-13, plan/0008) — GREEN, non-compounding — supersedes the RED entry above
+
+- question: with the multi-row paged red root-caused to the glue's
+  q-layout view (see MULTIROW-PAGED-ROOT-CAUSE.md) and fixed, does MTP
+  compound on the 27B champion path, and at which K?
+- config: decode paged-split PPS2 + verify gather + CUDA graphs,
+  Intel-Qwen3.6-27B, native mtp, 3 fresh restarts per K, medians of the
+  probe's mixed rows (results/mtp-champion-sweep/, summary.json).
+- K1: 1.06x ctx512 (24.8 vs 23.4) / 0.87x ctx2048 (11.5 vs 13.2)
+- K2: 0.86x ctx512 (20.2 vs 23.6) / 0.93x ctx2048 (12.3 vs 13.2)
+- K3 (banked, convergence run): 1.12x / 1.07x
+- VERDICT: NO_COMPOUND on the 27B — every K lands within 0.86-1.12;
+  the draft cost scales with the model and eats the acceptance gain.
+  The 4B (2.12x at K2) remains the MTP-friendly shape. Disposition:
+  MTP stays available and greedy-lossless; the 27B deployment question
+  is dead, the 4B-family question stays open.
+- greedy gate: 4/5 on ALL six reps, deterministic, K-independent;
+  ADJUDICATED BENIGN via the third reference — the stock-backend K1
+  control also scores 4/5 (adjudication-stock-k1.json), canaries are
+  identical in every run, and the root-cause logit diffs are <= 0.031
+  (fp16 tie-break class, the window-5 adjudication). The mismatch is
+  MTP-vs-plain-decode arithmetic, not the bridge.
+- side observation (single rep, no verdict): stock K1 speedups
+  1.19/1.14 exceed champion K1's — the inverse of the K3 ordering;
+  one look next window.
+- provenance: lane 734cd84be4; intent: question=MTP-on-champion
+  viability, mechanism=native mtp over the paged-split champion,
+  disposition=available-not-compounding.
