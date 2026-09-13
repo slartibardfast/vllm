@@ -36,3 +36,25 @@ mid/long ctx, with the PPS1 alternative touching 0.81 at ctx512
 restart-stable throughout. The doctrine acceptance (bridge >= baseline)
 remains open at ~0.7; the named residual lever is the per-token inner
 loop (4 barriers/token, warp-per-pair scoring).
+
+## Update (2026-09-13): the register-accumulator surgery committed run — NEW STANDING CHAMPION
+
+The plan/0008 inner-loop surgery (register-resident accumulators,
+warp-distributed pairs, warp-uniform softmax, two staging syncs per
+token, 1 KB smem) through the full gate train: standalone compile
+clean, oracle 36/36 at PPS2 (max rel 2.54e-04, the pre-surgery class),
+then medians of 3 fresh restarts, labels asserted every restart
+(BRIDGE_ATTN engaged, KV 175,672, zero preemptions):
+
+- ctx512 41.3 (band 9.9 pct) vs 34.3 = +20.4 pct
+- ctx2048 41.2 (band 0.0 pct — 41.2/41.2/41.2) vs 34.4 = +19.8 pct
+- short 195.5 (band 2.9 pct) vs 213.5 = -8.4 pct
+
+Floor ratio 0.75 (from 0.62); 0.82 of the TRITON baseline at mid ctx.
+The bridge arc: gather 27.3 -> split 26.3 -> tuned 34.3 -> register
+accumulators 41.3. The short-row cost is real and recorded (fixed
+per-token staging/broadcast overhead dominates at tiny contexts); the
+mid/long rows are the deployment targets. Mechanism evidence: ncu
+pre/post under .weco/c2-paged-decode/profile-20260913-* (L1/smem 84.5
+pct, 11.2/32 lanes, 30.3 pct barrier stalls, smem-limited occupancy
+before). Protocol transcript: results/inner-loop-surgery/committed-run.log.

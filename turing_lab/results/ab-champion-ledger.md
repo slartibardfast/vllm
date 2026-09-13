@@ -111,3 +111,33 @@ The convergence run proceeds on the proven arms.
 - provenance: lane 734cd84be4; intent: question=MTP-on-champion
   viability, mechanism=native mtp over the paged-split champion,
   disposition=available-not-compounding.
+
+## Inner-loop surgery: register-resident accumulators (2026-09-13, plan/0008) — WIN, new champion
+
+- question: the per-token inner loop is the named residual (champion
+  34.3 vs the 50.1 TRITON baseline). ncu at the champion shape (PPS2,
+  long ctx): L1/smem throughput 84.5 pct, DRAM 3.2 pct, FP32 ~1 pct of
+  peak, 11.2 of 32 lanes active, 30.3 pct barrier stalls, occupancy
+  smem-limited at 2 CTAs/SM — the sm_o shared-memory accumulation and
+  lane-0-serialized softmax updates are the wall.
+- surgery: register-resident accumulators (each warp owns its pairs,
+  each lane owns d/32 dims), warp-uniform softmax with a lane-0
+  broadcast, staging cut from five syncs per token to two, smem from
+  ~100 KB to 1 KB (occupancy no longer smem-limited). Combine kernel
+  and workspace layout unchanged.
+- gates: standalone compile clean; oracle 36/36 at PPS2 (std +
+  long-ctx, max rel 2.54e-04 — the pre-surgery class); committed-run
+  medians-of-3 fresh restarts, graphs, labels asserted, zero
+  preemptions.
+- VERDICT: WIN. ctx512 41.3 (38.1/41.3/42.2, band 9.9) vs 34.3 =
+  +20.4 pct; ctx2048 41.2 (41.2/41.2/41.2, band 0.0) vs 34.4 =
+  +19.8 pct; short 195.5 vs 213.5 = -8.4 pct (real, band 2.9 —
+  hypothesis: the unconditional two-row staging and the per-pair
+  broadcast shfl raise the fixed per-token cost, which dominates at
+  tiny contexts). Floor ratio 0.62 -> 0.75; TRITON-baseline ratio
+  0.68 -> 0.82. NEW STANDING CHAMPION: 41.3 / 41.2 / 195.5 (mid /
+  long / short ctx decode).
+- provenance: lane 8b26330508 + this surgery commit; ncu profiles
+  pre/post under .weco/c2-paged-decode/profile-*; intent:
+  question=inner-loop residual, mechanism=register accumulators +
+  warp-uniform softmax, disposition=champion.

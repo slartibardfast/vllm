@@ -32,7 +32,13 @@
 #define PAGES_PER_SPLIT 8
 #endif
 
-// phase 1: partial walk. grid = (reqs, h_kv, splits)
+// phase 1: partial walk. grid = (reqs, h_kv, splits).
+// plan/0008 inner-loop surgery: accumulators are REGISTER-resident and
+// warp-distributed (each warp owns its pairs, each lane owns d/32
+// dims), replacing the shared-memory sm_o read-modify-write that ncu
+// showed driving L1/smem to 84 pct with 11 of 32 lanes active and
+// 30 pct barrier stalls. Staging is one sync pair per token; softmax
+// state is warp-uniform (score broadcast from lane 0).
 __global__ void bridge_paged_split_walk_kernel(
     const __half* __restrict__ q, const __half* __restrict__ kv_cache,
     const int* __restrict__ block_table, const int* __restrict__ seq_lens,
@@ -52,101 +58,100 @@ __global__ void bridge_paged_split_walk_kernel(
   const int p_end = min(n_pages, p_begin + pages_per_split);
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
-
-  extern __shared__ float smem[];
-  __half* sK = reinterpret_cast<__half*>(smem);
-  __half* sV = sK + d;
-  float* sm_o = reinterpret_cast<float*>(sV + d);
-  float* sm_m = sm_o + QLMAX * g * d;
-  float* sm_l = sm_m + QLMAX * g;
-  float* sm_p = sm_l + QLMAX * g;
-  int* sm_alive = reinterpret_cast<int*>(sm_p + QLMAX * g);
+  const int DD = d >> 5;                       // dims per lane (d=256 -> 8)
+  const int ppw = (npair + NWARP - 1) / NWARP; // pairs per warp (<= 3)
 
   const __half* qbase = q + ((long)req * h_q + (long)kvh * g) * q_len * d;
 
-  for (int i = tid; i < QLMAX * g; i += NTHREADS) {
-    sm_m[i] = -INFINITY;
-    sm_l[i] = 0.f;
+  float qreg[3][8];  // qreg[p][ii] pairs with sK[lane + 32*ii]
+  float acc[3][8];
+  float m_run[3], l_run[3];
+  #pragma unroll
+  for (int p = 0; p < 3; p++) {
+    m_run[p] = -INFINITY;
+    l_run[p] = 0.f;
+    #pragma unroll
+    for (int ii = 0; ii < 8; ii++) { qreg[p][ii] = 0.f; acc[p][ii] = 0.f; }
   }
-  for (int i = tid; i < QLMAX * g * d; i += NTHREADS) sm_o[i] = 0.f;
-  __syncthreads();
+  #pragma unroll
+  for (int p = 0; p < 3; p++) {
+    const int pair = warp + p * NWARP;
+    if (pair < npair) {
+      const int qr = pair / g, hl = pair % g;
+      const __half* qrow = qbase + ((long)hl * q_len + qr) * d;
+      for (int ii = 0; ii < DD; ii++)
+        qreg[p][ii] = __half2float(qrow[lane + 32 * ii]);
+    }
+  }
 
-  for (int p = p_begin; p < p_end; p++) {
-    const int b_id = block_table[req * max_pages + p];
+  extern __shared__ __half smem[];  // sK (d) + sV (d) staging only
+  __half* sK = smem;
+  __half* sV = sK + d;
+
+  for (int pg = p_begin; pg < p_end; pg++) {
+    const int b_id = block_table[req * max_pages + pg];
     const __half* page = kv_cache + (long)b_id * sb + (long)kvh * sh;
-    const int tok0 = p * block_size;
+    const int tok0 = pg * block_size;
     for (int t = 0; t < block_size; t++) {
       const int pos = tok0 + t;
       if (pos >= seq_len) break;
       const __half* krow = page + (long)t * st;
-      if (tid == 0) sm_alive[0] = 0;
-      for (int e = tid; e < d; e += NTHREADS) sK[e] = krow[e];
-      __syncthreads();
-      for (int pair = warp; pair < npair; pair += NWARP) {
-        const int qr = pair / g, hl = pair % g;
-        const int allowed = (pos <= seq_len - q_len + qr);
-        if (!allowed) {
-          if (lane == 0) sm_p[pair] = -INFINITY;
-          continue;
-        }
-        if (lane == 0) atomicOr(sm_alive, 1);
-        const __half* qrow = qbase + ((long)hl * q_len + qr) * d;
-        float acc = 0.f;
-        for (int e = lane; e < d; e += 32)
-          acc += __half2float(qrow[e]) * __half2float(sK[e]);
-#pragma unroll
-        for (int off = 16; off > 0; off >>= 1)
-          acc += __shfl_down_sync(0xffffffffu, acc, off);
-        if (lane == 0) {
-          if (softcap > 0.f)
-            acc = fminf(fmaxf(acc, -softcap), softcap);
-          sm_p[pair] = acc * scale;
-        }
-      }
-      __syncthreads();
-      if (sm_alive[0] == 0) continue;
-      for (int pair = warp; pair < npair; pair += NWARP) {
-        if (lane != 0) continue;
-        float sc = sm_p[pair];
-        if (sc == -INFINITY) { sm_p[pair] = 0.f; continue; }
-        float m_old = sm_m[pair];
-        float m_new = fmaxf(m_old, sc);
-        float alpha = (m_old == -INFINITY) ? 0.f : __expf(m_old - m_new);
-        sm_m[pair] = m_new;
-        sm_l[pair] = sm_l[pair] * alpha + __expf(sc - m_new);
-        sm_p[pair] = __expf(sc - m_new);
-        float* orow = sm_o + pair * d;
-        for (int e = 0; e < d; e++) orow[e] *= alpha;
-      }
-      __syncthreads();
-      const __half* vrow = krow + d;
-      for (int e = tid; e < d; e += NTHREADS) sV[e] = vrow[e];
       __syncthreads();
       for (int e = tid; e < d; e += NTHREADS) {
-        float v = __half2float(sV[e]);
-        for (int pair = 0; pair < npair; pair++)
-          sm_o[pair * d + e] += sm_p[pair] * v;
+        sK[e] = krow[e];
+        sV[e] = krow[e + d];
       }
       __syncthreads();
+      for (int p = 0; p < ppw; p++) {
+        const int pair = warp + p * NWARP;
+        if (pair >= npair) continue;
+        const int qr = pair / g;
+        if (pos > seq_len - q_len + qr) continue;  // masked: warp-uniform
+        float part = 0.f;
+        #pragma unroll
+        for (int ii = 0; ii < 8; ii++)
+          if (ii < DD)
+            part += qreg[p][ii] * __half2float(sK[lane + 32 * ii]);
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+          part += __shfl_down_sync(0xffffffffu, part, off);
+        part = __shfl_sync(0xffffffffu, part, 0);  // broadcast lane 0
+        float sc = part * scale;
+        if (softcap > 0.f) sc = fminf(fmaxf(sc, -softcap), softcap);
+        const float m_new = fmaxf(m_run[p], sc);
+        const float alpha = (m_run[p] == -INFINITY)
+                                ? 0.f
+                                : __expf(m_run[p] - m_new);
+        const float w = __expf(sc - m_new);
+        m_run[p] = m_new;
+        l_run[p] = l_run[p] * alpha + w;
+        #pragma unroll
+        for (int ii = 0; ii < 8; ii++)
+          if (ii < DD) acc[p][ii] *= alpha;
+        #pragma unroll
+        for (int ii = 0; ii < 8; ii++)
+          if (ii < DD) acc[p][ii] += w * __half2float(sV[lane + 32 * ii]);
+      }
     }
   }
-  // emit partials to the workspace: [req][kvh][split][pair(, d)]
+
+  // emit normalized partials: o_s = acc / l (the window-5 precision
+  // form; combine merges as a weighted average over the same layout)
   const long pair_stride = (long)q_len * g;
   float* wm = ws_m + (((long)req * h_kv + kvh) * splits + split) * pair_stride;
   float* wl = ws_l + (((long)req * h_kv + kvh) * splits + split) * pair_stride;
   float* wo = ws_o +
               ((((long)req * h_kv + kvh) * splits + split) * pair_stride) * d;
-  // emit NORMALIZED partials: o_s / l_s (unit scale) so the combine
-  // is a weighted average, not a large-number multiply-divide — the
-  // unnormalized form cost two orders of magnitude of precision at
-  // long ctx (window 5, oracle 2e-2 vs v1's 2e-4)
-  for (int i = 0; i < npair; i++) {
-    wm[i] = sm_m[i];
-    wl[i] = sm_l[i];
-  }
-  for (int i = tid; i < npair * d; i += NTHREADS) {
-    int pr = i / d;
-    wo[i] = (sm_l[pr] > 0.f) ? sm_o[i] / sm_l[pr] : 0.f;
+  #pragma unroll
+  for (int p = 0; p < 3; p++) {
+    const int pair = warp + p * NWARP;
+    if (pair >= npair) continue;
+    if (lane == 0) { wm[pair] = m_run[p]; wl[pair] = l_run[p]; }
+    for (int ii = 0; ii < DD; ii++) {
+      const int e = lane + 32 * ii;
+      wo[(long)pair * d + e] =
+          (l_run[p] > 0.f) ? acc[p][ii] / l_run[p] : 0.f;
+    }
   }
 }
 
@@ -240,9 +245,10 @@ torch::Tensor bridge_paged_decode_split(
                            opts.dtype(torch::kFloat));
   auto out = torch::empty_like(q);
   dim3 grid(num_reqs, h_kv, splits);
-  size_t smem = (size_t)d * 2 * sizeof(__half) +
-                (size_t)QLMAX * g * d * sizeof(float) +
-                (size_t)3 * QLMAX * g * sizeof(float) + sizeof(int) * 4;
+  // register-accumulator surgery: staging only (sK + sV), the sm_o /
+  // sm_m / sm_l / sm_alive smem is gone; occupancy is no longer
+  // smem-limited (was 2 CTAs per SM)
+  size_t smem = (size_t)d * 2 * sizeof(__half);
   TORCH_CHECK(smem <= 48 * 1024, "smem over the static budget");
   auto stream = at::cuda::getCurrentCUDAStream();
   bridge_paged_split_walk_kernel<<<grid, NTHREADS, smem, stream>>>(
