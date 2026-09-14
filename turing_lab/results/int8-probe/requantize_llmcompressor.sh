@@ -21,7 +21,7 @@ set -euo pipefail
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
 ~/tools/autoround-venv/bin/auto-round quantize \
   --model_name /opt/models/Qwen3.5-4B \
-  --bits 8 --data_type int --group_size 128 \
+  --bits 8 --data_type int --group_size -1 \
   --act_bits 8 --act_data_type int \
   --model_dtype float16 --scale_dtype fp16 \
   --format llm_compressor \

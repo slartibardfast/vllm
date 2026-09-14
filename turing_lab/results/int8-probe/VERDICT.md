@@ -46,3 +46,30 @@ fixture-grade recipe with --format llm_compressor, which packs int8
 weights, group scales and activation scales as compressed-tensors
 that vLLM loads natively (no model-file patch). The headroom
 measurement (plan/0009 #int8-headroom) runs against that export.
+
+## Headroom verdict (2026-09-14, plan/0009 #int8-headroom): NO HEADROOM - W8A8 is 15-21 pct slower
+
+The full chain closed end-to-end this window: the llm_compressor
+re-export (requantize_llmcompressor.sh, adjusted to the format's
+requirements: sym dynamic W8A8, per-channel weights - grouped g128
+is rejected at the format check) produced a real compressed-tensors
+checkpoint (int8 weights, fp16 per-channel scales, dynamic
+token-level int8 activations) at
+/opt/models/Qwen3.5-4B-W8A8-CT-f16; the ENGINE LOADS IT NATIVELY on
+the champion configuration - the 0008 loader gap is closed, no model
+patch required.
+
+Measurement, 3 fresh restarts per arm, identical rows, champion
+config (BRIDGE_ATTN, paged-split PPS2, graphs), zero preemptions:
+
+- short_decode: W8A8 426.9 vs W4A16 538.1 (ratio 0.79)
+- ctx512_decode: 80.2 vs 94.0 (0.85)
+- ctx2048_decode: 75.9 vs 89.2 (0.85)
+
+(headroom-summary.json; headroom-w8a8ct/ and headroom-w4a16/.)
+
+VERDICT: the int8 tensor rate (203 TOPS, 2x fp16) buys nothing in
+the decode regime because decode is weight-bandwidth-bound and W8
+doubles the weight bytes; the narrower activation path does not pay
+for them. INT8 W8A8 is now a MEASURED lane on this silicon: closed,
+negative. The W4A16 incumbent stands.

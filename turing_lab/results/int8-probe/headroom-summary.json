@@ -1,0 +1,48 @@
+{
+ "protocol": "3 fresh restarts per arm, champion config (BRIDGE_ATTN, paged-split PPS2, graphs), 4B fixture, labels asserted, zero preemptions",
+ "short_decode": {
+  "w8a8": 426.9,
+  "w4a16": 538.1,
+  "ratio": 0.79,
+  "w8_vals": [
+   418.9,
+   426.9,
+   427.5
+  ],
+  "w4_vals": [
+   537.9,
+   538.1,
+   546.6
+  ]
+ },
+ "ctx512_decode": {
+  "w8a8": 80.2,
+  "w4a16": 94.0,
+  "ratio": 0.85,
+  "w8_vals": [
+   79.8,
+   80.2,
+   80.4
+  ],
+  "w4_vals": [
+   72.4,
+   94.0,
+   94.2
+  ]
+ },
+ "ctx2048_decode": {
+  "w8a8": 75.9,
+  "w4a16": 89.2,
+  "ratio": 0.85,
+  "w8_vals": [
+   66.5,
+   75.9,
+   78.6
+  ],
+  "w4_vals": [
+   78.5,
+   89.2,
+   94.2
+  ]
+ }
+}

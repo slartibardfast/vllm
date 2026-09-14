@@ -250,3 +250,20 @@ The convergence run proceeds on the proven arms.
 - provenance: lane this commit; intent: question=bandwidth lever
   two (KV read pipelining), mechanism=register prefetch +
   double-buffer, disposition=falsified-negative.
+
+## INT8 headroom measured (2026-09-14, plan/0009) — lane closed, negative
+
+- question: what does a narrower activation path buy on this silicon
+  versus the W4A16 incumbent (the deferred 0008 probe)?
+- chain: llm_compressor export (per-channel sym dynamic W8A8
+  compressed-tensors) -> engine loads natively on the champion
+  config -> identical rows, 3 fresh restarts per arm.
+- VERDICT: NO HEADROOM. short 426.9 vs 538.1 (0.79), ctx512 80.2 vs
+  94.0 (0.85), ctx2048 75.9 vs 89.2 (0.85). Decode is
+  weight-bandwidth-bound; W8 doubles the weight bytes and the int8
+  tensor rate cannot buy them back at decode batch shapes. The
+  formats doctrine's last unexplored lane on TU102 is measured and
+  closed. Disposition: W4A16 stands everywhere.
+- provenance: results/int8-probe/headroom-summary.json; intent:
+  question=int8 headroom, mechanism=compressed-tensors W8A8 on the
+  champion path, disposition=closed-negative.
