@@ -4,6 +4,18 @@ Everything below is turnkey. Order matters. Commands are exact.
 
 # The working queue lives in the plan room, not here
 
+STATUS (2026-09-14, plan/0009 DRAINED 9/9): every task receipted.
+The window's verdicts: the short-row cost stands (engine-context
+inversion, mechanism open, chrome-trace diff named as follow-up);
+both PROFILE-DELTA bandwidth levers falsified (half2 NO_DIFF,
+pipelining NEGATIVE ctx512 -11.5 pct) so the champion
+41.3/41.2/195.5 class stands as this kernel generation's engine
+optimum; the K1 inversion is REAL (stock 1.32/1.13 vs champion
+1.06/0.87); the 4B champion-path K-tree is all-negative - MTP x
+champion is dead at family scale; the int8 chain closed end to end
+and measured NO HEADROOM (W8A8 0.79-0.85 of W4A16). Everything
+below is lane reference material.
+
 STATUS (2026-09-13, re-planned): plan/0009 (champion bandwidth
 campaign) is the live queue. It drives the named bandwidth levers
 (half2 staging, KV read pipelining), recovers the recorded short-row
@@ -22,7 +34,7 @@ The working queue lives in the plan room: the task machinery reads
 plan READMEs, so the queue is a receipted build sequence there
 (since 2026-09-12, plan/0008; now plan/0009). This runbook keeps
 only the lane's standing command recipes below (window open/close,
-fixture reproduction, provenance). Follow plan/0009's build sequence
+fixture reproduction, provenance). Follow the plan room's live queue (plan/PLAN.md index)
 for what runs next; the recipes here are what its verify fields and
 task bodies cite.
 
