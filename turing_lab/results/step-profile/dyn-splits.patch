@@ -1,0 +1,63 @@
+diff --git a/turing_lab/bridge/bridge_paged_decode_split.cu b/turing_lab/bridge/bridge_paged_decode_split.cu
+index 203bd14108..e87ee651c6 100644
+--- a/turing_lab/bridge/bridge_paged_decode_split.cu
++++ b/turing_lab/bridge/bridge_paged_decode_split.cu
+@@ -235,7 +235,39 @@ torch::Tensor bridge_paged_decode_split(
+   // window-5 long-ctx oracle FAIL: 300-page tables need 38 splits; a
+   // 16 cap covered 128 pages = half the context dropped). grid.z
+   // tolerates thousands; MAX_SPLITS only bounds workspace sanity.
+-  int splits = (max_pages + PAGES_PER_SPLIT - 1) / PAGES_PER_SPLIT;
++  // plan/0010 dynamic-split surgery (BRIDGE_DYN_SPLITS=1): a piecewise
++  // sizing table on max_pages, transplanted from flash-attention's
++  // split-count rule (1 split when CTAs already fill the machine, more
++  // when the walk is latency-bound), tuned to this kernel's measured
++  // regimes: short tables keep few splits (the walk is trivial there
++  // and combine cost grows linearly with splits - PPS1 at short cost
++  // -15 pct), ctx512-class tables take one page per split (the ncu
++  // stall capture names 60 pct of issued-instruction cycles in load
++  // latency + barrier waits at 0.89 waves; more CTAs hide them, PPS1
++  // +7.9 pct paired), long tables stay at the flat PPS2 champion
++  // (bandwidth regime). Splits and pages_per_split are both derived
++  // from the static max_pages dim, so capture stays shape-static and
++  // every page is still walked exactly once: splits x pps >= max_pages.
++  int splits;
++  int pps;
++  const char* dyn = getenv("BRIDGE_DYN_SPLITS");
++  if (dyn && dyn[0] == '1') {
++    if (max_pages <= 8) {
++      splits = (max_pages + 2) / 3;        // short: ~3 pages per split
++      pps = 3;
++    } else if (max_pages <= 64) {
++      splits = max_pages;                  // ctx512-class: 1 page/split
++      pps = 1;
++    } else {
++      splits = (max_pages + 1) / 2;        // long: the flat PPS2 form
++      pps = 2;
++    }
++    if (splits < 1) splits = 1;
++  } else {
++    splits = (max_pages + PAGES_PER_SPLIT - 1) / PAGES_PER_SPLIT;
++    pps = PAGES_PER_SPLIT;
++  }
++  TORCH_CHECK((long)splits * pps >= max_pages, "split sizing drops pages");
+   TORCH_CHECK(splits <= 65535, "page table too large for grid.z");
+   auto opts = q.options();
+   auto ws_m = torch::empty({num_reqs, h_kv, splits, pair_stride},
+@@ -258,7 +290,7 @@ torch::Tensor bridge_paged_decode_split(
+       ws_m.data_ptr<float>(), ws_l.data_ptr<float>(),
+       ws_o.data_ptr<float>(), num_reqs, h_q, h_kv, q_len, d, max_pages,
+       block_size, kv_cache.stride(0), kv_cache.stride(1),
+-      kv_cache.stride(2), splits, PAGES_PER_SPLIT, (float)scale,
++      kv_cache.stride(2), splits, pps, (float)scale,
+       (float)softcap);
+   size_t csmem = (size_t)(2 * pair_stride + splits * pair_stride) *
+                  sizeof(float);
+@@ -267,7 +299,7 @@ torch::Tensor bridge_paged_decode_split(
+       ws_m.data_ptr<float>(), ws_l.data_ptr<float>(),
+       ws_o.data_ptr<float>(), seq_lens.data_ptr<int>(),
+       reinterpret_cast<__half*>(out.data_ptr<at::Half>()), num_reqs, h_q,
+-      h_kv, q_len, d, splits, max_pages, block_size, PAGES_PER_SPLIT);
++      h_kv, q_len, d, splits, max_pages, block_size, pps);
+   C10_CUDA_KERNEL_LAUNCH_CHECK();
+   return out;
+ }

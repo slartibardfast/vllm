@@ -267,3 +267,31 @@ The convergence run proceeds on the proven arms.
 - provenance: results/int8-probe/headroom-summary.json; intent:
   question=int8 headroom, mechanism=compressed-tensors W8A8 on the
   champion path, disposition=closed-negative.
+
+## Dynamic split sizing (2026-09-15, plan/0010) — NO_DIFF, champion unchanged; kernel-structure path CLOSED for the gap
+
+- question: the ncu stall capture at the ctx512 champion shape named
+  60 pct of issued-instruction cycles in L1TEX-load latency (8.3 cyc)
+  plus CTA-barrier waits (8.2 cyc) at 0.89 waves - more CTAs should
+  hide them (PPS1 measured +7.9 pct paired at gate-1, but a flat
+  switch cost the short row -15 pct). Does a piecewise dynamic split
+  table (short: ~3 pages/split; ctx512-class: 1 page/split; long: the
+  flat PPS2 form; env-gated BRIDGE_DYN_SPLITS, capture-safe since
+  splits derive from the static max_pages dim) take the ctx512 win
+  without the short cost?
+- gates: oracle 72/72 (flat and dynamic paths, std + long-ctx);
+  committed PAIRED A/B, both arms fresh same-day, 3 restarts each.
+- VERDICT: NO_DIFF on every row. short 194.2 vs 194.1; ctx512 42.2
+  vs 42.3; ctx2048 40.9 vs 40.9. The gate-1 ctx512 signal was a
+  low-day artifact (the flat arm's own ctx512 band today was 19.4
+  pct: 38.0-46.2). The champion does NOT move; the patch is preserved
+  at results/step-profile/dyn-splits.patch (default-off, orphans
+  nothing).
+- STANDING after four structure levers (half2 NO_DIFF, pipelining
+  NEGATIVE, dynamic splits NO_DIFF, plus the 0009 pair): the walk
+  kernel's internal structure does not hold the committed ctx512
+  gap. The 4.3 ms lives at step level outside the attention kernel
+  duration - the nsys step ledger is the remaining instrument.
+- provenance: lane this commit; intent: question=dynamic split
+  sizing, mechanism=piecewise table on max_pages, disposition=
+  falsified-no-diff.
