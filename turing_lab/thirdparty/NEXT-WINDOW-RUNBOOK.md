@@ -4,6 +4,14 @@ Everything below is turnkey. Order matters. Commands are exact.
 
 # The working queue lives in the plan room, not here
 
+STATUS (2026-09-16, plan/0010 CLOSED WITH A WIN): the nsys
+decode-step ledger priced the walk kernel's empty-split waste (92
+pct of CTAs at real contexts) and the one-line guard is the NEW
+STANDING CHAMPION 42.3/40.2/202.6 (0.84 of the TRITON baseline,
+floor 0.76; ctx512 band collapsed 19.4 to 0.7 pct). plan/0011 (the
+W4A16 register-dequant front) is open. Everything below is lane
+reference material.
+
 STATUS (2026-09-14, plan/0009 DRAINED 9/9): every task receipted.
 The window's verdicts: the short-row cost stands (engine-context
 inversion, mechanism open, chrome-trace diff named as follow-up);
