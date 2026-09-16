@@ -295,3 +295,30 @@ The convergence run proceeds on the proven arms.
 - provenance: lane this commit; intent: question=dynamic split
   sizing, mechanism=piecewise table on max_pages, disposition=
   falsified-no-diff.
+
+## Empty-split guard (2026-09-16, plan/0010) — WIN, new champion 42.3/40.2/202.6
+
+- question: the nsys decode-step ledger priced the walk kernel at
+  6.96 ms/step with grid z=196 — the block table is max_model_len-wide,
+  so at real contexts ~92 pct of split CTAs own zero pages and each
+  still emits ~6 KB of zero partials the combine never reads. Does
+  returning before the emit (one guard line) move the rows?
+- gates: oracle 36/36 both batteries; gate-0 6/8 adjudicated benign
+  by the dual-arm discriminator (max worst-row 0.0625, mean 0.004,
+  the standing tie-break class — the guard is arithmetic-exact on
+  live splits, skipped work is never read); committed PAIRED A/B,
+  both arms fresh same-day, 3 restarts each, labels asserted, zero
+  preemptions.
+- VERDICT: WIN. short 202.6 vs 194.1 (+4.4 pct, band-separated:
+  0.8 vs 2.8) — recovering most of the recorded register-surgery
+  short-row cost (the empty-CTA waste bites hardest where pages are
+  fewest against the wide table); ctx512 42.3 vs 42.3 with the band
+  collapsed from 19.4 to 0.7 pct (the empty-CTA wave lottery was the
+  ctx512 row's noise source — a variance win the founding discipline
+  prizes); ctx2048 40.2 vs 40.9 (-1.7 pct, sub-band). NEW STANDING
+  CHAMPION: 42.3 / 40.2 / 202.6. Floor ratio 0.76; TRITON-baseline
+  ratio 0.84 at ctx512.
+- provenance: guard commit this entry; adjudication
+  results/step-profile/dual-guard-adjudication.jsonl; paired arms
+  pairA-flat-*/pairB-guard-* beside it. intent: question=empty-split
+  waste, mechanism=early return before emit, disposition=champion.

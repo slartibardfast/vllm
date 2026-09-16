@@ -136,7 +136,15 @@ __global__ void bridge_paged_split_walk_kernel(
   }
 
   // emit normalized partials: o_s = acc / l (the window-5 precision
-  // form; combine merges as a weighted average over the same layout)
+  // form; combine merges as a weighted average over the same layout).
+  // plan/0010 empty-split guard: the engine's block table is sized
+  // for max_model_len, so at real contexts most splits own zero pages;
+  // the combine merges only the active prefix (min(splits,
+  // ceil(n_pages/pps))), so an empty split's emit is pure waste - at
+  // ctx512 the nsys ledger priced it at 6.96 ms/step of walk time
+  // with 92 pct of CTAs empty. Return before emit; the workspace
+  // slots the combine would read for these splits are never read.
+  if (p_begin >= n_pages) return;
   const long pair_stride = (long)q_len * g;
   float* wm = ws_m + (((long)req * h_kv + kvh) * splits + split) * pair_stride;
   float* wl = ws_l + (((long)req * h_kv + kvh) * splits + split) * pair_stride;
