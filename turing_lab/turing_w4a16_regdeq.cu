@@ -115,7 +115,10 @@ constexpr int BK = 128;  // k chunk == group size (group_blocks = 8)
 constexpr int K16S = BK / 16;        // k16 steps per chunk
 constexpr int B_ROW_INT4S = 32;      // int4s per k16 row of the tile: the
                                      // repack's 128 words per (16k x 64n) tile
-constexpr int A_ROW_HALVES = BK + 8; // +8 pad: fork k_opt's bank-conflict-free
+constexpr int A_ROW_HALVES = BK + 8; // +8: stride 68 w = 4 mod 32
+// spreads 8 row starts across all 32 banks (conflict-free reads);
+// the +4 trial (v1.1 falsification, -26 pct M512) bought store
+// conflicts at the read side's expense - measured, reverted
                                      // fragment read pattern
 
 // Lookup-table 3-input logic op, verbatim idiom of dequant.h:74-81.
