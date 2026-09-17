@@ -412,8 +412,13 @@ __global__ void __launch_bounds__(THREADS) turing_w4a16_regdeq_kernel(
       // half-words: dequant(word) -> columns 16w'+c, dequant(word >> 8) ->
       // columns 16w'+8+c. Their permuted scale halves are adjacent
       // (8c+2w', 8c+2w'+1): one aligned half2 read, .x/.y per fragment.
+      // v3 fix: the permute is per-64-block, so the absolute stored
+      // half is 64U + 8c + 2w' - the v2 index dropped the 64U block
+      // base (and used w where w' = w&3), reading the wrong 64-block's
+      // scales for every U > 0.
       const __half2 s_pair = *reinterpret_cast<const __half2*>(
-          &sS[slot][(lane_c << 3) + (warp << 1)]);
+          &sS[slot][((warp >> 2) << 6) + (lane_c << 3)
+                    + ((warp & 3) << 1)]);
       const __half s_lo = reinterpret_cast<const __half*>(&s_pair)[0];
       const __half s_hi = reinterpret_cast<const __half*>(&s_pair)[1];
       const int u_blk = warp >> 2;

@@ -322,3 +322,37 @@ The convergence run proceeds on the proven arms.
   results/step-profile/dual-guard-adjudication.jsonl; paired arms
   pairA-flat-*/pairB-guard-* beside it. intent: question=empty-split
   waste, mechanism=early return before emit, disposition=champion.
+
+## W4A16 regdeq v3 vs incumbent (2026-09-17, plan/0011) — SPLIT: small-M regime WON, large-M still the incumbent's
+
+- question: does the register-dequant kernel consuming the incumbent
+  repacked layout (the resolved contract, term-verified) clear the
+  23.50 kill-line and take the M>=128 regime?
+- v3 = v2 template's BN128/S2 with the scale-index fix (the permute
+  is per-64-block: absolute stored half 64U + 8c + 2w'; the v2 index
+  dropped 64U and used w for w&3). Oracle 6/6 PASS, errors identical
+  to v1's (exact numerics preserved through the fix).
+- PAIRED committed A/B, both arms fresh same-day, locked 1455,
+  median-of-20, correctness-gated:
+  | M | regdeq v3 | incumbent | ratio |
+  |---|---|---|---|
+  | 1 | 0.82 | 0.63 | 1.30 |
+  | 8 | 6.51 | 5.04 | 1.29 |
+  | 32 | 20.11 | 14.3 | 1.41 |
+  | 128 | 25.26 | 36.2 | 0.70 |
+  | 512 | 28.63 | 52.59 | 0.54 |
+- VERDICT: SPLIT. The kill-line (23.50, the fork's seated baseline)
+  is CLEARED (+21.8 pct) and the SMALL-M REGIME FLIPS TO THE FORK:
+  M<=32 wins by 1.29-1.41x — and M<=32 is the serving decode shape
+  (batch x draft rows). The incumbent keeps large-M decisively
+  (2x at M512: its deep pipeline and register-resident B class own
+  the compute-bound regime). The plan's original acceptance (a WIN
+  at M>=128) is NOT met and is recorded as such.
+- DISPOSITION: the regime map is the deliverable. Next named lever:
+  engine-side dispatch (regdeq for the decode regime M<64, incumbent
+  Marlin for M>=64) — an engine-lane integration, its own task; and
+  the large-M gap stays open for a pipeline-depth generation.
+- provenance: kernel commit this entry; paired arms
+  regdeq-v3-bn128s2.log + regdeq-paired-incumbent.log; intent:
+  question=paired regime map, mechanism=BN128 scale-index fix,
+  disposition=split-win-small-M.

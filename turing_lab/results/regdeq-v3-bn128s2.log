@@ -1,0 +1,19 @@
+oracle battery (fp64 reference):
+  PASS M1 N4096 K4096 G128: err=0.01097
+  PASS M8 N4096 K4096 G128: err=0.01604
+  PASS M64 N4096 K4096 G128: err=0.01657
+  PASS M512 N4096 K4096 G128: err=0.01967
+  PASS M512 N11008 K4096 G128: err=0.01951
+  PASS M16 N4096 K11008 G128: err=0.0233
+BATTERY: all pass
+M sweep (N=K=4096, G=128, median of 20):
+  M1    :      40.9 us     0.82 TFLOP/s
+  M2    :      40.9 us     1.64 TFLOP/s
+  M4    :      41.0 us     3.28 TFLOP/s
+  M8    :      41.2 us     6.51 TFLOP/s
+  M16   :      42.4 us    12.68 TFLOP/s
+  M32   :      53.4 us    20.11 TFLOP/s
+  M64   :      90.8 us    23.66 TFLOP/s
+  M128  :     170.0 us    25.26 TFLOP/s
+  M256  :     323.4 us    26.56 TFLOP/s
+  M512  :     600.1 us    28.63 TFLOP/s
