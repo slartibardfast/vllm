@@ -24,10 +24,14 @@ from torch.utils.cpp_extension import load
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEV = "cuda:0"
 
+_BN = os.environ.get("REGDEQ_BN", "128")
+_ST = os.environ.get("REGDEQ_STAGES", "3")
 ext = load(
-    name="turing_w4a16_regdeq",
+    name=f"turing_w4a16_regdeq_bn{_BN}_s{_ST}",
     sources=[os.path.join(HERE, "turing_w4a16_regdeq.cu")],
-    extra_cuda_cflags=["-arch=sm_75", "-O3"], verbose=False)
+    extra_cuda_cflags=["-arch=sm_75", "-O3",
+                       f"-DTW4A16_BN={_BN}",
+                       f"-DTW4A16_STAGES={_ST}"], verbose=False)
 
 
 def pack_contract(q):
